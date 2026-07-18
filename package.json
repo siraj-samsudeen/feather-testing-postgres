@@ -1,0 +1,53 @@
+{
+  "name": "feather-testing-postgres",
+  "version": "0.1.0",
+  "description": "Phoenix-style SQL Sandbox testing for React + Postgres stacks: per-test transaction rollback, in-process server fixtures, and full-stack component tests.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/siraj-samsudeen/feather-testing-postgres.git"
+  },
+  "keywords": [
+    "testing",
+    "postgres",
+    "vitest",
+    "react",
+    "testing-library",
+    "sql-sandbox",
+    "phoenix",
+    "ecto",
+    "hono"
+  ],
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/react.tsx",
+    "./session": "./src/session.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@tanstack/react-query": ">=5",
+    "@tanstack/react-router": ">=1",
+    "@testing-library/dom": ">=10",
+    "@testing-library/react": ">=16",
+    "@testing-library/user-event": ">=14",
+    "react": ">=18",
+    "react-dom": ">=18",
+    "vitest": ">=2"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/react-query": { "optional": true },
+    "@tanstack/react-router": { "optional": true },
+    "@testing-library/dom": { "optional": true },
+    "@testing-library/react": { "optional": true },
+    "@testing-library/user-event": { "optional": true },
+    "react": { "optional": true },
+    "react-dom": { "optional": true }
+  }
+}
