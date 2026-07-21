@@ -2,8 +2,9 @@
 
 > Sibling of [feather-testing-convex](https://github.com/siraj-samsudeen/feather-testing-convex) for
 > React + Hono + Postgres stacks. Extracted from
-> [frappe-clone](https://github.com/siraj-samsudeen/frappe-clone), where it is
-> exercised by a 320-test server suite and a 10-test component suite.
+> [featherbase](https://github.com/siraj-samsudeen/featherbase) (developed under
+> the working name frappe-clone), where it is exercised by a 320-test server
+> suite and a 10-test component suite.
 
 ### How do you test a React component that talks to a Postgres-backed server?
 
