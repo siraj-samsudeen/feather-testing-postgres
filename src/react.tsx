@@ -41,7 +41,7 @@ export function installFetchBridge(
   }
 }
 
-export interface RenderDeskOptions {
+export interface RenderAppOptions {
   /** The app's real route tree (e.g. `routeTree` from src/router.tsx). */
   routeTree: unknown
   /** Session token to store before rendering (from a TestClient). */
@@ -54,14 +54,14 @@ export interface RenderDeskOptions {
   queryClient?: QueryClient
 }
 
-export interface DeskRenderResult extends RenderResult {
+export interface RenderAppResult extends RenderResult {
   router: { navigate: (opts: { to: string }) => Promise<unknown>; state: unknown }
   queryClient: QueryClient
 }
 
 /** Full-page render: mounts the real router at `path` (memory history) with a
  * fresh QueryClient. The Phoenix `conn`-test of this stack. */
-export async function renderDesk(path: string, opts: RenderDeskOptions): Promise<DeskRenderResult> {
+export async function renderApp(path: string, opts: RenderAppOptions): Promise<RenderAppResult> {
   if (opts.token) {
     localStorage.setItem(opts.tokenKey ?? 'fc_token', opts.token)
     if (opts.user)
@@ -87,16 +87,16 @@ export async function renderDesk(path: string, opts: RenderDeskOptions): Promise
   return { ...result, router: router as any, queryClient }
 }
 
-export interface SessionRenderResult extends DeskRenderResult {
+export interface SessionRenderResult extends RenderAppResult {
   session: Session
 }
 
-/** renderDesk + a fluent Session bound to the rendered page. */
+/** renderApp + a fluent Session bound to the rendered page. */
 export async function renderSession(
   path: string,
-  opts: RenderDeskOptions & { session?: SessionOptions },
+  opts: RenderAppOptions & { session?: SessionOptions },
 ): Promise<SessionRenderResult> {
-  const result = await renderDesk(path, opts)
+  const result = await renderApp(path, opts)
   const session = new Session({ root: result.baseElement as HTMLElement, ...opts.session })
   return { ...result, session }
 }

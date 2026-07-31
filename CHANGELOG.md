@@ -2,6 +2,14 @@
 
 Releases follow [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+- **Breaking:** `renderDesk` -> `renderApp`, `RenderDeskOptions` ->
+  `RenderAppOptions`, `DeskRenderResult` -> `RenderAppResult`. The old names
+  were borrowed from one consumer's UI shell and have no bearing on what the
+  helper does
+  ([#1](https://github.com/siraj-samsudeen/feather-testing-postgres/issues/1)).
+
 ## 0.1.0
 
 Initial extraction from the
