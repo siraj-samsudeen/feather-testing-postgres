@@ -36,7 +36,7 @@ philosophy of
    (JWT), users are real rows — created inside the sandbox.
 3. **Fetch bridge (component tests)** — `installFetchBridge(app)` patches
    jsdom's `fetch` so the app's own api client (`fetch('/api/...')`) lands
-   on the in-process server. `renderDesk(path)` mounts the REAL route tree
+   on the in-process server. `renderApp(path)` mounts the REAL route tree
    on a memory history with a fresh QueryClient: component → fetch → Hono →
    sandboxed Postgres, end to end, in milliseconds.
 
@@ -89,7 +89,7 @@ import { screen } from '@testing-library/react'
 import { test, expect, renderSession } from './pg-test'   // web binding
 
 test('create a ticket through the real UI', async ({ admin }) => {
-  const { session } = await renderSession('/desk/Ticket/new', admin)
+  const { session } = await renderSession('/admin/Ticket/new', admin)
   await session
     .fillIn('Title', 'Filed from a component test')
     .selectOption('Priority', 'High')
