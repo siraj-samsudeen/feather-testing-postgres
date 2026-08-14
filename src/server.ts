@@ -85,9 +85,9 @@ export function makeClient(app: AppLike, token: string | null, user: string | nu
 }
 
 export type SeedFn = (
-  doctype: string,
+  table: string,
   values?: Record<string, unknown>,
-) => Promise<Record<string, unknown> & { name: string }>
+) => Promise<Record<string, unknown> & { row_id: string }>
 
 export type CreateUserFn = (opts?: {
   email?: string
@@ -153,11 +153,11 @@ export function createPgTest(b: PgTestBindings, opts: PgTestOptions = {}) {
       await use(await createUser())
     },
     seed: async ({ admin }, use) => {
-      await use(async (doctype, values = {}) => {
-        return (await admin.post('/api/save_doc', { doctype, doc: values })) as Record<
+      await use(async (table, values = {}) => {
+        return (await admin.post('/api/save_row', { table, row: values })) as Record<
           string,
           unknown
-        > & { name: string }
+        > & { row_id: string }
       })
     },
   })
