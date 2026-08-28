@@ -37,7 +37,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "feather-testing-core": "^0.3.0"
+    "feather-testing-core": "^0.4.0"
   },
   "peerDependencies": {
     "@tanstack/react-query": ">=5",
