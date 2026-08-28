@@ -109,7 +109,7 @@ all run inside the per-test transaction:
 | `api` | Anonymous in-process client (`get/post/put/delete/fetch`). |
 | `admin` | Administrator-authenticated client. |
 | `client` | A freshly created regular user (default roles from `options.defaultRoles`). |
-| `seed(doctype, values)` | Insert a document through the REAL save lifecycle as admin. Returns the saved doc. |
+| `seed(table, values)` | Insert a row through the REAL save lifecycle as admin. Returns the saved row, including its `row_id`. |
 | `createUser(opts)` | Create another user (email/fullName/roles); returns an authenticated client. |
 
 Clients throw `TestApiError { status, type, fields }` on non-2xx — assert
@@ -120,25 +120,39 @@ with `rejects.toMatchObject({ status: 403 })`.
 `renderSession(path, client)` returns `{ session }` — a fluent, chainable
 driver. Methods queue; `await` executes the chain.
 
-Interactions: `fillIn(label, value)` (handles label-as-sibling layouts),
-`selectOption`, `check/uncheck/choose`, `click`, `clickButton` (refuses
-disabled buttons), `clickLink`, `submit`.
-Assertions: `assertText`, `refuteText`. Scoping: `within(selector, fn)`.
-Debugging: `debug()`.
+The DSL itself is
+[feather-testing-core](https://github.com/siraj-samsudeen/feather-testing-core):
+this package contributes the DOM adapter, so the same vocabulary drives a
+component test here and a Playwright E2E test there. Every core verb is
+available — `fillIn`, `selectOption`, `check`/`uncheck`/`choose`, `click`,
+`clickButton`, `clickLink`, `submit`, `upload`, `dropFile`, `assertText`,
+`refuteText`, `assertValue`, `assertChecked`/`refuteChecked`,
+`assertSelected`, `assertOptions`, `within(selector, fn)`, `step(name, fn)`,
+`debug()`. `visit`, `assertPath`, `refutePath`, `assertHas` and `refuteHas`
+throw: there is no URL bar in jsdom.
+
+Four verbs are deliberately adapted to app markup rather than textbook markup:
+
+| Verb | Adapted behaviour |
+|------|-------------------|
+| `fillIn` and every other label-addressed verb | Resolves `<label>Subject *</label>` sitting as a **sibling** of its control inside a wrapper `<div>` — no `htmlFor` needed — and ignores the trailing required marker. Falls back to a placeholder. Also accepts a number |
+| `choose` | By label, for the same reason: a radio with a sibling label has no accessible name |
+| `clickButton` / `clickLink` / `click` | Exact name first, then a name that *contains* it — an ordered fallback, so the lookup is never ambiguous. `clickButton` refuses a disabled button rather than clicking into the void |
+| `assertText` / `refuteText` | Containment checks over the rendered text, so `assertText('TICK-')` can assert a generated id's prefix |
 
 Failures print the whole chain:
 
 ```
-feather-testing-postgres: step 3 of 4 failed
+feather-testing-core: Step 3 of 4 failed
 
-Failed at: clickButton("Save")
+Failed at: clickButton('Save')
 Cause: Button "Save" is disabled — a user could not click it
 
 Chain:
-    [ok] fillIn("Title", "x")
-    [ok] selectOption("Priority", "High")
->>> [FAILED] clickButton("Save")
-    [skipped] assertText("TICK-")
+    [ok] fillIn('Title', 'x')
+    [ok] selectOption('Priority', 'High')
+>>> [FAILED] clickButton('Save')
+    [skipped] assertText('TICK-')
 ```
 
 ## Limitations & notes
@@ -168,6 +182,9 @@ Chain:
 ```bash
 npm install -D feather-testing-postgres
 ```
+
+`feather-testing-core` comes along as a dependency — it is where the Session
+DSL lives.
 
 Peer dependencies: `vitest` (always), plus `react`, `react-dom`,
 `@tanstack/react-query`, `@tanstack/react-router`, and
@@ -211,3 +228,31 @@ export const sql = new Proxy((() => {}) as unknown as typeof root, {
 
 The proxy is transparent in production (delegate === root always). Pass
 `sql` + `_setSqlDelegate` into `createPgTest` and everything else follows.
+
+## Developing this library
+
+```bash
+npm install
+npm run typecheck
+npm test
+```
+
+The suite has three parts: the DOM adapter and the Session it binds
+(`tests/session.test.tsx`), the React entry point's fetch bridge and
+`renderApp`/`renderSession` (`tests/react.test.tsx`), and the sandbox itself
+driven through `createPgTest` against a **real** Postgres
+(`tests/sandbox.test.ts`). `tests/types/consumer-surface.ts` compiles — but
+does not run — the shapes a consumer binds this harness with, so a type that
+drifts fails here rather than in the consumer's repo.
+
+The sandbox suite needs a throwaway database; it creates and drops its own
+tables inside it:
+
+```bash
+createdb feather_harness_test
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/feather_harness_test npm test
+```
+
+That URL is also the default, so `npm test` works once the database exists.
+Never point it at a database you care about — the suite drops its tables on
+the way in and out.

@@ -50,7 +50,7 @@ export interface RenderAppOptions {
   tokenKey?: string
   userKey?: string
   /** Stored user profile (the app hydrates the rest via whoami). */
-  user?: { name: string; email?: string; full_name?: string | null }
+  user?: { row_id: string; email?: string; full_name?: string | null }
   queryClient?: QueryClient
 }
 
@@ -67,7 +67,10 @@ export async function renderApp(path: string, opts: RenderAppOptions): Promise<R
     if (opts.user)
       localStorage.setItem(
         opts.userKey ?? 'fc_user',
-        JSON.stringify({ email: opts.user.name, full_name: null, ...opts.user }),
+        // A user's row id is its email in most apps; both keys are written so
+        // a UI that reads either finds something, and the caller's own values
+        // win.
+        JSON.stringify({ email: opts.user.row_id, full_name: null, ...opts.user }),
       )
   }
   const queryClient =
@@ -101,4 +104,11 @@ export async function renderSession(
   return { ...result, session }
 }
 
-export { Session, createSession, type SessionOptions } from './session'
+export {
+  DomDriver,
+  Session,
+  StepError,
+  createSession,
+  type SessionOptions,
+  type SessionStepContext,
+} from './session'

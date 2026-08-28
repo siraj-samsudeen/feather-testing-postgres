@@ -1,2 +1,5 @@
 node_modules/
 dist/
+
+# Generated locally; this package publishes source and pins nothing.
+package-lock.json
