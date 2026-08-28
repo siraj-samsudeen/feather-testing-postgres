@@ -4,6 +4,52 @@ Releases follow [semantic versioning](https://semver.org/).
 
 ## Unreleased
 
+- **The Session DSL is no longer forked.** This package now depends on
+  [`feather-testing-core`](https://github.com/siraj-samsudeen/feather-testing-core)
+  (`>=0.3.0`) for the chain, its step bookkeeping and its failure messages,
+  and contributes only the DOM adapter — a subclass of core's `RTLDriver`
+  whose lookups suit app markup. The two implementations had already begun to
+  drift ([featherbase#225](https://github.com/siraj-samsudeen/featherbase/issues/225)).
+
+  What a consumer gets for free: `assertValue`, `assertChecked` /
+  `refuteChecked`, `assertSelected`, `assertOptions`, `upload`, `dropFile`,
+  and the `step(name, fn)` escape hatch, all using this adapter's label
+  lookup. `StepError` is now exported so a chain failure can be caught by
+  type.
+
+  Kept, because the markup this harness drives needs them: label resolution
+  through wrapper siblings and trailing required markers; `choose` by label
+  rather than accessible name; exact-then-containing name lookup for
+  `clickButton` / `clickLink` / `click`; `clickButton`'s refusal to click a
+  disabled button; containment `assertText` / `refuteText`; the 3000ms
+  default lookup timeout; `fillIn` accepting a number.
+
+  Reconciled to core, and therefore **behaviour changes**:
+  - `submit()` no longer falls back to the first `<form>` in the page. It
+    requires a prior field interaction and clicks the form's submit button
+    (rather than calling `requestSubmit()`), so the browser's own click path
+    runs.
+  - `selectOption(label, option)` matches an `<option>` by its text only, not
+    by its `value`.
+  - Chain failures are headed `feather-testing-core: Step N of M failed` and
+    quote step arguments with single quotes.
+  - `within(selector, fn)`'s callback must return the scoped session or a
+    promise; returning anything else is now a type error rather than a
+    silently dropped chain.
+
+- **Fixed:** `AppLike.request` accepts `Response | Promise<Response>`. Hono's
+  `app.request` may answer synchronously, and consumers were wrapping it in
+  `Promise.resolve()` to satisfy the old type.
+- **Fixed:** `RenderAppOptions.user` is keyed by `row_id`, matching the wire
+  vocabulary the rest of the package adopted, and the stored profile's
+  fallback `email` now comes from it. It previously read a `name` field that
+  no longer exists, writing `email: undefined` into the app's session.
+- Docs and fixture names speak rows and tables: `seed(table, values)`,
+  `insertUser` returns a `row_id`.
+- The library has its own test suite for the first time: 40 tests over the DOM
+  adapter, the React entry point, and the sandbox driven through
+  `createPgTest` against a real Postgres. `npm test` and `npm run typecheck`.
+
 - **Breaking:** `renderDesk` -> `renderApp`, `RenderDeskOptions` ->
   `RenderAppOptions`, `DeskRenderResult` -> `RenderAppResult`. The old names
   were borrowed from one consumer's UI shell and have no bearing on what the

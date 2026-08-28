@@ -1,28 +1,27 @@
-// A fluent, chainable Session DSL for driving a rendered UI in tests —
-// Phoenix/Wallaby-flavored, implemented on @testing-library/dom +
-// user-event. Methods queue actions and return `this`; awaiting the session
-// executes the queue sequentially. On failure the error shows the whole
-// chain with the failing step marked.
+// The fluent Session DSL for driving a rendered UI in tests. The chain, its
+// step bookkeeping and its failure messages all come from feather-testing-core
+// — this module contributes only the DOM adapter, i.e. the lookups that differ
+// because this harness drives app markup rather than textbook markup.
 //
 //   await session
 //     .fillIn('Title', 'Sales mismatch')
 //     .clickButton('Save')
 //     .assertText('TICK-')
+//
+// Everything core's RTL adapter already does correctly is inherited, so verbs
+// this package never implemented — assertValue, assertChecked, assertSelected,
+// assertOptions, upload, dropFile, step() — come along for free.
 
+import { waitFor, prettyDOM } from '@testing-library/dom'
+import type userEvent from '@testing-library/user-event'
 import {
-  prettyDOM,
-  waitFor,
-  within as tlWithin,
-} from '@testing-library/dom'
-import userEvent from '@testing-library/user-event'
+  RTLDriver,
+  Session as CoreSession,
+  type RTLStepContext,
+} from 'feather-testing-core/rtl'
+import type { TestDriver } from 'feather-testing-core'
 
 type UserApi = ReturnType<typeof userEvent.setup>
-
-interface Step {
-  label: string
-  run: () => Promise<void>
-  status: 'pending' | 'ok' | 'failed' | 'skipped'
-}
 
 export interface SessionOptions {
   root?: HTMLElement
@@ -30,34 +29,62 @@ export interface SessionOptions {
   timeout?: number
 }
 
+/** Longer than RTL's own 1000ms default: a lookup here is usually waiting on a
+ * real round trip through the in-process app to the sandboxed database. */
+const DEFAULT_TIMEOUT = 3000
+
 const j = (s: unknown) => JSON.stringify(s)
 
-function isVisibleControl(el: Element): boolean {
-  return el instanceof HTMLInputElement ||
-    el instanceof HTMLTextAreaElement ||
-    el instanceof HTMLSelectElement
+const normalize = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim()
+
+/** The visible name of a clickable: its text, or an input's `value`. */
+function clickableName(el: HTMLElement): string {
+  if (el instanceof HTMLInputElement) return normalize(el.value)
+  return normalize(el.textContent)
 }
 
-export class Session {
-  private steps: Step[] = []
-  private user: UserApi
-  private rootEl: () => HTMLElement
-  private timeout: number
-  private lastControl: Element | null = null
+function isFormControl(el: Element): boolean {
+  return (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLSelectElement
+  )
+}
 
-  constructor(opts: SessionOptions = {}) {
-    this.user = userEvent.setup()
-    this.rootEl = () => opts.root ?? document.body
-    this.timeout = opts.timeout ?? 3000
+/**
+ * Core's RTL driver, retargeted at app markup.
+ *
+ * Each override below exists because the stock lookup gives a wrong answer
+ * against the UIs this harness drives — not because the DSL differs:
+ *
+ * - `findField` — app labels are frequently plain `<label>Subject *</label>`
+ *   siblings inside a wrapper `<div>`, with no `htmlFor` and no nesting. RTL's
+ *   `findByLabelText` cannot associate those, and the trailing required-marker
+ *   `*` is not part of the field's name.
+ * - `choose` — by label, for the same reason: a radio whose label is a wrapper
+ *   sibling has no accessible name for a role lookup to match.
+ * - `clickButton` / `clickLink` / `click` — named by visible text rather than
+ *   accessible name, exact match first and a containing match only as an
+ *   ordered fallback. `clickButton` additionally refuses a disabled button
+ *   instead of clicking into the void, the most common false pass in a form
+ *   test.
+ * - `assertText` / `refuteText` — containment checks over the rendered text, so
+ *   `assertText('TICK-')` can assert a generated id's prefix.
+ */
+export class DomDriver extends RTLDriver {
+  constructor(opts: SessionOptions = {}, user?: UserApi) {
+    super(user, opts.root ?? document.body, opts.timeout ?? DEFAULT_TIMEOUT)
   }
 
-  // ---- element lookup ------------------------------------------------------
-
-  private q() {
-    return tlWithin(this.rootEl())
+  protected override scoped(element: HTMLElement): TestDriver<RTLStepContext> {
+    return new DomDriver({ root: element, timeout: this.timeout }, this.user)
   }
 
-  private async find<T extends Element>(describe: string, get: () => T | null): Promise<T> {
+  /** Retry a lookup until it yields an element or the timeout expires. */
+  protected async find<T extends Element>(
+    describe: string,
+    get: () => T | null,
+  ): Promise<T> {
     try {
       return await waitFor(
         () => {
@@ -65,29 +92,29 @@ export class Session {
           if (!el) throw new Error(`Could not find ${describe}`)
           return el
         },
-        { timeout: this.timeout, container: this.rootEl() },
+        { timeout: this.timeout, container: this.rootElement() },
       )
     } catch (e) {
       throw new Error(`Could not find ${describe}`, { cause: e })
     }
   }
 
-  /** Label text → its form control. Handles htmlFor-associated labels AND
-   * the common "label and input are siblings in a wrapper div" layout. */
-  private findControl(label: string): Promise<HTMLElement> {
+  /** Label text -> its form control. Handles htmlFor-associated labels AND the
+   * common "label and input are siblings in a wrapper div" layout. */
+  protected override findField(label: string): Promise<HTMLElement> {
     return this.find(`a field labelled ${j(label)}`, () => {
-      const root = this.rootEl()
-      const norm = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim()
+      const root = this.rootElement()
       for (const l of Array.from(root.querySelectorAll('label'))) {
-        const text = norm(l.textContent)?.replace(/\s*\*$/, '')
+        // A trailing "*" is a required marker, not part of the field's name.
+        const text = normalize(l.textContent).replace(/\s*\*$/, '')
         if (text !== label) continue
         if (l instanceof HTMLLabelElement && l.control) return l.control
         // control nested inside the label
         const nested = l.querySelector('input, textarea, select')
-        if (nested && isVisibleControl(nested)) return nested as HTMLElement
+        if (nested && isFormControl(nested)) return nested as HTMLElement
         // control as a sibling within the same wrapper
         const sibling = l.parentElement?.querySelector('input, textarea, select')
-        if (sibling && isVisibleControl(sibling)) return sibling as HTMLElement
+        if (sibling && isFormControl(sibling)) return sibling as HTMLElement
       }
       // placeholder fallback
       const byPlaceholder = root.querySelector(`[placeholder=${JSON.stringify(label)}]`)
@@ -96,208 +123,102 @@ export class Session {
     })
   }
 
-  // ---- chain plumbing ------------------------------------------------------
-
-  private push(label: string, run: () => Promise<void>): this {
-    this.steps.push({ label, run, status: 'pending' })
-    return this
-  }
-
-  /** Awaiting the session executes the queued steps in order. The queue
-   * resets afterwards so the same session can run further chains.
-   *
-   * Resolves with `undefined` — NEVER with `this`: a thenable that resolves
-   * to itself makes `await` recurse forever (the promise resolution
-   * procedure keeps re-awaiting the thenable). */
-  then<TResult1 = void, TResult2 = never>(
-    onfulfilled?: ((value: void) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-  ): Promise<TResult1 | TResult2> {
-    const steps = this.steps
-    this.steps = []
-    const execute = async (): Promise<void> => {
-      for (let i = 0; i < steps.length; i++) {
-        const step = steps[i]
-        try {
-          await step.run()
-          step.status = 'ok'
-        } catch (cause) {
-          step.status = 'failed'
-          for (let k = i + 1; k < steps.length; k++) steps[k].status = 'skipped'
-          throw this.chainError(steps, i, cause)
-        }
-      }
-    }
-    return execute().then(onfulfilled, onrejected)
-  }
-
-  private chainError(steps: Step[], failedIndex: number, cause: unknown): Error {
-    const causeMsg = cause instanceof Error ? cause.message : String(cause)
-    const lines = steps.map((s) => {
-      if (s.status === 'failed') return `>>> [FAILED] ${s.label}`
-      return `    [${s.status === 'ok' ? 'ok' : 'skipped'}] ${s.label}`
-    })
-    const err = new Error(
-      `feather-testing-postgres: step ${failedIndex + 1} of ${steps.length} failed\n\n` +
-        `Failed at: ${steps[failedIndex].label}\n` +
-        `Cause: ${causeMsg.split('\n')[0]}\n\n` +
-        `Chain:\n${lines.join('\n')}`,
+  /** Exact name first, then a containing name — an ordered fallback, so the
+   * lookup can never be ambiguous the way a bare substring match is. */
+  private byName<T extends HTMLElement>(candidates: T[], name: string): T | null {
+    return (
+      candidates.find((el) => clickableName(el) === name) ??
+      candidates.find((el) => clickableName(el).includes(name)) ??
+      null
     )
-    err.cause = cause
-    return err
   }
 
-  // ---- interactions --------------------------------------------------------
+  override async clickButton(name: string): Promise<void> {
+    const el = await this.find(`a button ${j(name)}`, () =>
+      this.byName(
+        Array.from(
+          this.rootElement().querySelectorAll<HTMLElement>(
+            'button, [role="button"], input[type="submit"]',
+          ),
+        ),
+        name,
+      ),
+    )
+    if (el instanceof HTMLButtonElement && el.disabled)
+      throw new Error(`Button ${j(name)} is disabled — a user could not click it`)
+    await this.user.click(el)
+  }
 
-  fillIn(label: string, value: string | number): this {
-    return this.push(`fillIn(${j(label)}, ${j(value)})`, async () => {
-      const el = await this.findControl(label)
-      this.lastControl = el
-      await this.user.clear(el)
-      const text = String(value)
-      if (text) await this.user.type(el, text)
+  /** By label, not by accessible name: a radio whose label is a wrapper
+   * sibling has no accessible name at all, so core's role lookup would never
+   * find it in the markup this adapter exists for. */
+  override async choose(label: string): Promise<void> {
+    const radio = await this.findField(label)
+    if (!(radio instanceof HTMLInputElement))
+      throw new Error(`Field ${j(label)} is not an input`)
+    if (!radio.checked) await this.user.click(radio)
+    this.lastFormElement = radio.closest('form')
+  }
+
+  override async clickLink(name: string): Promise<void> {
+    const el = await this.find(`a link ${j(name)}`, () =>
+      this.byName(Array.from(this.rootElement().querySelectorAll<HTMLElement>('a')), name),
+    )
+    await this.user.click(el)
+  }
+
+  override async click(text: string): Promise<void> {
+    const el = await this.find(`an element with text ${j(text)}`, () => {
+      const all = Array.from(this.rootElement().querySelectorAll<HTMLElement>('*'))
+      // innermost element whose own text matches
+      const matches = all.filter((n) => normalize(n.textContent).includes(text))
+      return matches.length ? matches[matches.length - 1] : null
     })
+    await this.user.click(el)
   }
 
-  selectOption(label: string, option: string): this {
-    return this.push(`selectOption(${j(label)}, ${j(option)})`, async () => {
-      const el = await this.findControl(label)
-      if (!(el instanceof HTMLSelectElement))
-        throw new Error(`Field ${j(label)} is not a <select>`)
-      this.lastControl = el
-      const opt = Array.from(el.options).find(
-        (o) => o.textContent?.trim() === option || o.value === option,
-      )
-      if (!opt) {
-        const available = Array.from(el.options).map((o) => o.textContent?.trim())
-        throw new Error(`No option ${j(option)} in ${j(label)} (has: ${available.join(', ')})`)
-      }
-      await this.user.selectOptions(el, opt)
-    })
+  override async assertText(text: string): Promise<void> {
+    await waitFor(
+      () => {
+        const content = this.rootElement().textContent ?? ''
+        if (!content.includes(text)) throw new Error(`Text ${j(text)} not found on the page`)
+      },
+      { timeout: this.timeout, container: this.rootElement() },
+    )
   }
 
-  private setChecked(label: string, want: boolean, verb: string): this {
-    return this.push(`${verb}(${j(label)})`, async () => {
-      const el = await this.findControl(label)
-      if (!(el instanceof HTMLInputElement)) throw new Error(`Field ${j(label)} is not an input`)
-      this.lastControl = el
-      if (el.checked !== want) await this.user.click(el)
-    })
+  override async refuteText(text: string): Promise<void> {
+    // Let pending renders settle, then require absence.
+    await new Promise((r) => setTimeout(r, 50))
+    const content = this.rootElement().textContent ?? ''
+    if (content.includes(text)) throw new Error(`Text ${j(text)} IS on the page but should not be`)
   }
 
-  check(label: string): this {
-    return this.setChecked(label, true, 'check')
+  override async debug(): Promise<void> {
+    // eslint-disable-next-line no-console
+    console.log(prettyDOM(this.rootElement(), 20000))
+  }
+}
+
+/**
+ * Core's Session, bound to the DOM adapter above and constructed from
+ * `SessionOptions` rather than a driver instance.
+ */
+export class Session extends CoreSession<RTLStepContext> {
+  constructor(opts: SessionOptions = {}) {
+    super(new DomDriver(opts))
   }
 
-  uncheck(label: string): this {
-    return this.setChecked(label, false, 'uncheck')
-  }
-
-  choose(label: string): this {
-    return this.setChecked(label, true, 'choose')
-  }
-
-  clickButton(name: string): this {
-    return this.push(`clickButton(${j(name)})`, async () => {
-      const el = await this.find(`a button ${j(name)}`, () => {
-        const buttons = Array.from(
-          this.rootEl().querySelectorAll<HTMLElement>('button, [role="button"], input[type="submit"]'),
-        )
-        return (
-          buttons.find((b) => (b.textContent ?? '').replace(/\s+/g, ' ').trim() === name) ??
-          buttons.find((b) => (b.textContent ?? '').includes(name)) ??
-          null
-        )
-      })
-      if (el instanceof HTMLButtonElement && el.disabled)
-        throw new Error(`Button ${j(name)} is disabled — a user could not click it`)
-      await this.user.click(el)
-    })
-  }
-
-  clickLink(name: string): this {
-    return this.push(`clickLink(${j(name)})`, async () => {
-      const el = await this.find(`a link ${j(name)}`, () => {
-        const links = Array.from(this.rootEl().querySelectorAll<HTMLElement>('a'))
-        return (
-          links.find((a) => (a.textContent ?? '').replace(/\s+/g, ' ').trim() === name) ??
-          links.find((a) => (a.textContent ?? '').includes(name)) ??
-          null
-        )
-      })
-      await this.user.click(el)
-    })
-  }
-
-  click(text: string): this {
-    return this.push(`click(${j(text)})`, async () => {
-      const el = await this.find(`an element with text ${j(text)}`, () => {
-        const all = Array.from(this.rootEl().querySelectorAll<HTMLElement>('*'))
-        // innermost element whose own text matches
-        const matches = all.filter((n) => {
-          const own = (n.textContent ?? '').replace(/\s+/g, ' ').trim()
-          return own === text || own.includes(text)
-        })
-        return matches.length ? matches[matches.length - 1] : null
-      })
-      await this.user.click(el)
-    })
-  }
-
-  submit(): this {
-    return this.push('submit()', async () => {
-      const form =
-        (this.lastControl?.closest('form') as HTMLFormElement | null) ??
-        this.rootEl().querySelector('form')
-      if (!form) throw new Error('No form to submit')
-      form.requestSubmit()
-    })
-  }
-
-  // ---- assertions ----------------------------------------------------------
-
-  assertText(text: string): this {
-    return this.push(`assertText(${j(text)})`, async () => {
-      await waitFor(
-        () => {
-          const content = this.rootEl().textContent ?? ''
-          if (!content.includes(text)) throw new Error(`Text ${j(text)} not found on the page`)
-        },
-        { timeout: this.timeout, container: this.rootEl() },
-      )
-    })
-  }
-
-  refuteText(text: string): this {
-    return this.push(`refuteText(${j(text)})`, async () => {
-      // Let pending renders settle, then require absence.
-      await new Promise((r) => setTimeout(r, 50))
-      const content = this.rootEl().textContent ?? ''
-      if (content.includes(text)) throw new Error(`Text ${j(text)} IS on the page but should not be`)
-    })
-  }
-
-  // ---- scoping & debugging -------------------------------------------------
-
-  within(selector: string, fn: (s: Session) => Session | Promise<unknown>): this {
-    return this.push(`within(${j(selector)}, ...)`, async () => {
-      const scopeEl = await this.find(`an element matching ${j(selector)}`, () =>
-        this.rootEl().querySelector<HTMLElement>(selector),
-      )
-      const scoped = new Session({ root: scopeEl, timeout: this.timeout })
-      scoped.user = this.user
-      await fn(scoped)
-    })
-  }
-
-  debug(): this {
-    return this.push('debug()', async () => {
-      // eslint-disable-next-line no-console
-      console.log(prettyDOM(this.rootEl(), 20000))
-    })
+  /** Numbers are a convenience for numeric fields; the DOM only ever sees a
+   * string. */
+  override fillIn(label: string, value: string | number): this {
+    return super.fillIn(label, String(value))
   }
 }
 
 export function createSession(opts: SessionOptions = {}): Session {
   return new Session(opts)
 }
+
+export { StepError } from 'feather-testing-core'
+export type { RTLStepContext as SessionStepContext } from 'feather-testing-core/rtl'

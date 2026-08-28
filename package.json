@@ -32,6 +32,13 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "feather-testing-core": "^0.3.0"
+  },
   "peerDependencies": {
     "@tanstack/react-query": ">=5",
     "@tanstack/react-router": ">=1",
@@ -43,12 +50,43 @@
     "vitest": ">=2"
   },
   "peerDependenciesMeta": {
-    "@tanstack/react-query": { "optional": true },
-    "@tanstack/react-router": { "optional": true },
-    "@testing-library/dom": { "optional": true },
-    "@testing-library/react": { "optional": true },
-    "@testing-library/user-event": { "optional": true },
-    "react": { "optional": true },
-    "react-dom": { "optional": true }
+    "@tanstack/react-query": {
+      "optional": true
+    },
+    "@tanstack/react-router": {
+      "optional": true
+    },
+    "@testing-library/dom": {
+      "optional": true
+    },
+    "@testing-library/react": {
+      "optional": true
+    },
+    "@testing-library/user-event": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "^5.102.8",
+    "@tanstack/react-router": "^1.170.32",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.6",
+    "@types/node": "^26.4.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "jsdom": "^28.1.0",
+    "postgres": "^3.4.9",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.11"
   }
 }

@@ -7,7 +7,9 @@ import { test as base } from 'vitest'
 import { withSandbox, type SandboxHooks } from './sandbox'
 
 export interface AppLike {
-  request(input: string, init?: RequestInit): Promise<Response>
+  /** Hono's `app.request` may answer synchronously, so accept either shape —
+   * every caller here awaits the result. */
+  request(input: string, init?: RequestInit): Response | Promise<Response>
 }
 
 export interface PgTestBindings extends SandboxHooks {
@@ -15,8 +17,8 @@ export interface PgTestBindings extends SandboxHooks {
   /** Mint a session token for an existing enabled user (no password needed —
    * bind to the server's issueSession). */
   mintToken(user: string): Promise<string>
-  /** Create a user through the real save lifecycle; returns its document
-   * name. Called inside the sandbox, so it rolls back with the test. */
+  /** Create a user through the real save lifecycle; returns its `row_id`.
+   * Called inside the sandbox, so it rolls back with the test. */
   insertUser(opts: { email: string; fullName?: string; roles: string[] }): Promise<string>
   /** The administrator account name. Default: 'Administrator'. */
   adminUser?: string
@@ -35,7 +37,8 @@ export class TestApiError extends Error {
 }
 
 export interface TestClient {
-  /** The user this client is authenticated as (null = anonymous). */
+  /** The `row_id` of the user this client is authenticated as (null =
+   * anonymous). */
   user: string | null
   token: string | null
   fetch(path: string, init?: RequestInit): Promise<Response>
@@ -50,7 +53,7 @@ export function makeClient(app: AppLike, token: string | null, user: string | nu
     // FormData bodies must keep their runtime-generated multipart boundary —
     // never force a JSON content-type onto them.
     const isForm = typeof FormData !== 'undefined' && init.body instanceof FormData
-    return app.request(path, {
+    return await app.request(path, {
       ...init,
       headers: {
         ...(isForm ? {} : { 'content-type': 'application/json' }),
@@ -105,7 +108,7 @@ export interface PgTestFixtures {
   /** A fresh regular user (created inside the sandbox) with the harness's
    * default roles. */
   client: TestClient
-  /** Insert a document through the real save lifecycle as Administrator. */
+  /** Insert a row through the real save lifecycle as Administrator. */
   seed: SeedFn
   /** Create an additional user; returns an authenticated client. */
   createUser: CreateUserFn
@@ -141,12 +144,12 @@ export function createPgTest(b: PgTestBindings, opts: PgTestOptions = {}) {
     createUser: async ({ db: _db }, use) => {
       await use(async (o = {}) => {
         const email = o.email ?? `user-${++userCounter}@feather.test`
-        const name = await b.insertUser({
+        const rowId = await b.insertUser({
           email,
           fullName: o.fullName,
           roles: o.roles ?? opts.defaultRoles ?? [],
         })
-        return makeClient(b.app, await b.mintToken(name), name)
+        return makeClient(b.app, await b.mintToken(rowId), rowId)
       })
     },
     client: async ({ createUser }, use) => {
