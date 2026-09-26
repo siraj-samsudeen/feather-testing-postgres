@@ -48,7 +48,7 @@ import { app } from '../src/index'
 import { sql, _setSqlDelegate } from '../src/db'
 import { invalidateMeta } from '../src/meta'
 import { issueSession } from '../src/auth'
-import { saveDoc } from '../src/document'
+import { saveRow } from '../src/document'
 import { createPgTest } from 'feather-testing-postgres'
 
 export const test = createPgTest({
@@ -58,9 +58,9 @@ export const test = createPgTest({
   onTeardown: () => invalidateMeta(),
   mintToken: async (user) => (await issueSession(user)).token,
   insertUser: async ({ email, roles }) => {
-    const doc = await saveDoc('User', { name: email, email, enabled: true,
+    const row = await saveRow('User', { row_id: email, email, enabled: true,
       roles: roles.map((role) => ({ role })) }, 'Administrator')
-    return String(doc.name)
+    return String(row.row_id)
   },
 })
 ```
@@ -73,11 +73,11 @@ import { expect } from 'vitest'
 test('reporters see only their own tickets', async ({ seed, createUser }) => {
   const alice = await createUser({ roles: ['Ticket Reporter'] })
   await seed('Ticket', { title: 'Someone else’s ticket' })          // as admin
-  const mine = await alice.post('/api/save_doc', {
-    doctype: 'Ticket', doc: { title: 'Mine' } })
+  const mine = await alice.post('/api/save_row', {
+    table: 'Ticket', row: { title: 'Mine' } })
 
-  const list = await alice.get<{ data: { name: string }[] }>('/api/resource/Ticket')
-  expect(list.data.map((d) => d.name)).toEqual([mine.name])
+  const list = await alice.get<{ data: { row_id: string }[] }>('/api/resource/Ticket')
+  expect(list.data.map((r) => r.row_id)).toEqual([mine.row_id])
 })
 // No cleanup. The transaction rolls back. The database is untouched.
 ```

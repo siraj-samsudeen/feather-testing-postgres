@@ -2,11 +2,15 @@
 
 Releases follow [semantic versioning](https://semver.org/).
 
-## Unreleased
+## 0.2.0
+
+- **Breaking:** `seed(table, values)` now posts to `/api/save_row` with
+  `{ table, row }` and returns a row keyed by `row_id`, replacing the retired
+  `/api/save_doc` endpoint, `{ doctype, doc }` payload, and `name` key.
 
 - **The Session DSL is no longer forked.** This package now depends on
   [`feather-testing-core`](https://github.com/siraj-samsudeen/feather-testing-core)
-  (`>=0.3.0`) for the chain, its step bookkeeping and its failure messages,
+  (`^0.4.0`) for the chain, its step bookkeeping and its failure messages,
   and contributes only the DOM adapter — a subclass of core's `RTLDriver`
   whose lookups suit app markup. The two implementations had already begun to
   drift ([featherbase#225](https://github.com/siraj-samsudeen/featherbase/issues/225)).

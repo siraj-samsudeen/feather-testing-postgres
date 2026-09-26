@@ -1,6 +1,6 @@
 {
   "name": "feather-testing-postgres",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Phoenix-style SQL Sandbox testing for React + Postgres stacks: per-test transaction rollback, in-process server fixtures, and full-stack component tests.",
   "license": "MIT",
   "repository": {
