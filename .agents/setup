@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+step() {
+  printf '\n==> %s\n' "$1"
+}
+
+step "Installing PostgreSQL when needed"
+if ! command -v psql >/dev/null 2>&1; then
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql
+fi
+
+step "Preparing the test database"
+read -r pg_version pg_cluster pg_status < <(
+  pg_lsclusters --no-header | awk 'NR == 1 { print $1, $2, $4 }'
+)
+if [[ -z "${pg_version:-}" ]]; then
+  echo "PostgreSQL was installed but no cluster was created" >&2
+  exit 1
+fi
+if [[ "$pg_status" != "online" ]]; then
+  sudo pg_ctlcluster "$pg_version" "$pg_cluster" start
+fi
+sudo -u postgres psql --set ON_ERROR_STOP=1 <<'SQL'
+ALTER USER postgres PASSWORD 'postgres';
+SELECT 'CREATE DATABASE feather_harness_test'
+WHERE NOT EXISTS (
+  SELECT FROM pg_database WHERE datname = 'feather_harness_test'
+)\gexec
+SQL
+
+step "Installing Node.js dependencies"
+# The orb's Node 26 image currently bundles npm 10, whose peer resolver crashes
+# on Vitest's optional peers. Use a compatible npm without altering this
+# package's intentionally unpinned, ignored package-lock policy.
+npx --yes npm@12.1.0 install --package-lock=false --no-audit --no-fund
+
+# Node 26 exposes an experimental global localStorage that shadows jsdom's
+# implementation. Disable it for npm-run test processes when the runtime
+# supports the flag; remove a stale setting if an older orb runtime does not.
+if node --help | grep -q -- '--no-experimental-webstorage'; then
+  npm config set --location=user node-options=--no-experimental-webstorage
+else
+  npm config delete --location=user node-options
+fi

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.amp/portals/*
 
 # Generated locally; this package publishes source and pins nothing.
 package-lock.json

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Repair the local test database service if the orb resumes with it stopped.
+read -r pg_version pg_cluster pg_status < <(
+  pg_lsclusters --no-header | awk 'NR == 1 { print $1, $2, $4 }'
+)
+if [[ "$pg_status" != "online" ]]; then
+  sudo pg_ctlcluster "$pg_version" "$pg_cluster" start
+fi
