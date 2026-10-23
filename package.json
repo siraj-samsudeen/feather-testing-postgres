@@ -1,7 +1,7 @@
 {
   "name": "feather-testing-postgres",
   "version": "0.2.0",
-  "description": "Phoenix-style SQL Sandbox testing for React + Postgres stacks: per-test transaction rollback, in-process server fixtures, and full-stack component tests.",
+  "description": "Phoenix-style SQL Sandbox testing for Postgres stacks: per-test transaction rollback or per-test database clones, on PGlite or a real Postgres (Bun.sql / postgres.js), under bun test or Vitest, with in-process server fixtures and full-stack component tests.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,7 +16,11 @@
     "sql-sandbox",
     "phoenix",
     "ecto",
-    "hono"
+    "hono",
+    "bun",
+    "pglite",
+    "drizzle",
+    "elysia"
   ],
   "type": "module",
   "main": "src/index.ts",

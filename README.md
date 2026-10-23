@@ -40,7 +40,147 @@ philosophy of
    on a memory history with a fresh QueryClient: component → fetch → Hono →
    sandboxed Postgres, end to end, in milliseconds.
 
-## Quick start (server test)
+## Engines and strategies (Bun.sql, postgres.js, PGlite)
+
+Two setups are supported side by side:
+
+- **postgres.js + Vitest with a delegate seam** — the 0.2 API below
+  (`createPgTest`, `withSandbox`), unchanged. featherbase uses it.
+- **Injection, any runner** — the app takes its database as an argument
+  (`createApp({ db })`) and the test hands it a Drizzle handle bound to the
+  test's transaction. No global delegate, no SQL proxy. Runs under `bun test`
+  or Vitest, on PGlite or a real Postgres.
+
+Postgres is the only dialect; PGlite *is* Postgres (compiled to WASM,
+in-process). Two settings pick how tests run:
+
+| Setting | Values | Default |
+|---|---|---|
+| **engine** — where the database lives | `pglite` (in-process, nothing installed) · `postgres` (a real server via Bun.sql under Bun, postgres.js under Node; `DATABASE_URL`) | `FEATHER_DB` env, else `pglite` — a fresh clone tests with nothing installed |
+| **strategy** — how tests are isolated | `tx`: one transaction per test, always rolled back; the app's own `db.transaction()` becomes a SAVEPOINT · `clone`: a fresh database per test copied from a migrated template (`CREATE DATABASE … TEMPLATE` on Postgres, a `dumpDataDir` snapshot on PGlite), real COMMITs | `tx`; opt into `clone` per file for commit-dependent code |
+
+Measured on an M-series Mac (Bun 1.4.2, Postgres 17, PGlite 0.5.11), per
+test: `tx` ≈ 0.2 ms on every engine and driver; `clone` ≈ 68 ms on both.
+Engine start + migrations: PGlite ≈ 0.6 s, Postgres ≈ 15–65 ms.
+
+### The injection contract (Elysia)
+
+```ts
+// src/app.ts — production passes the real db; tests pass the test's handle
+export function createApp({ db }: { db: FeatherDrizzleDb }) {
+  return new Elysia()
+    .get('/todos', async () => db.select().from(todos))
+    .post('/todos', async ({ body }) => {
+      await db.transaction(async (tx) => {          // a SAVEPOINT under `tx`
+        await tx.insert(todos).values({ title: body.title })
+      })
+      return { ok: true }
+    })
+}
+```
+
+```ts
+// test/todos.test.ts (bun test)
+import { test, expect } from 'bun:test'
+import { postgresFixtures, useBunFixtures } from 'feather-testing-postgres/bun'
+import { factory, seq } from 'feather-testing-postgres/drizzle'
+
+const t = useBunFixtures({
+  ...postgresFixtures({ migrations: './drizzle' }),   // engine from FEATHER_DB
+  app: { scope: 'test', deps: ['db'], setup: ({ db }) => createApp({ db }) },
+})
+const userFactory = factory(users, { email: seq((n) => `u${n}@x.test`), name: 'Ada' })
+
+test('lists todos', async () => {
+  const u = await userFactory.insert(t.db)
+  await t.db.insert(todos).values({ title: 'fixture', ownerId: u.id })
+  const res = await t.app.handle(new Request('http://localhost/todos'))
+  expect(await res.json()).toHaveLength(1)
+})                                                    // rolled back here
+```
+
+`app.listen(0)` works too: a browser test's parallel requests queue on the
+test's one transaction and see its fixture rows. (Elysia's `handle` needs a
+URL whose host is at least as long as `localhost`; `http://app/x` misroutes.)
+
+### The API
+
+```ts
+import { createFeatherDb } from 'feather-testing-postgres'   // or /engine (runner-free)
+
+const fdb = createFeatherDb({
+  engine?: 'pglite' | 'postgres',      // FEATHER_DB, else 'pglite'
+  strategy?: 'tx' | 'clone',           // 'tx'
+  url?: string,                        // DATABASE_URL (postgres engine)
+  driver?: 'bun' | 'postgres-js',      // Bun.sql under Bun, else postgres.js
+  migrations?: string,                 // drizzle-kit folder, applied once
+  setup?: (sql) => unknown,            // once, after migrations (clone: on the template)
+  schema?: Record<string, unknown>,    // for db.query.*
+  pglite?: { extensions?: … },         // PGlite constructor options
+})
+await fdb.start()                          // boot + migrate; idempotent
+await fdb.migrateOnce(folder)              // once per FeatherDb (tx: the db; clone: the template)
+const { db, sql, raw } = await fdb.beginTest()
+await fdb.endTest()                        // rollback / drop the clone
+await fdb.close()
+```
+
+`db` is Drizzle (drizzle-orm `0.45.x`, an optional peer); `sql` is a tagged
+template returning rows, plus `sql.unsafe(text, params)`, on the same
+transaction; `raw` is the driver's own handle.
+
+**Fixtures.** `postgresFixtures(options | fdb)` returns plain definitions any
+fixture engine can drive — `{ scope, deps?, setup(deps), teardown?(value, deps) }`:
+
+| Fixture | Scope | Deps | Value |
+|---|---|---|---|
+| `dbEngine` | file | — | the started `FeatherDb` (closed afterwards) |
+| `testDb` | test | `dbEngine` | `{ db, sql, raw }` (ended afterwards) |
+| `db` | test | `testDb` | the Drizzle handle |
+| `sql` | test | `testDb` | raw SQL on the same transaction |
+
+Runner helpers on top of them:
+
+- **bun:test** (`feather-testing-postgres/bun`): `sandboxEach(options)` returns
+  live `{ db, sql, testDb, dbEngine }`; `useBunFixtures(defs)` runs your own
+  definitions alongside. Both use beforeAll/beforeEach hooks and set up every
+  fixture. **Tests must run sequentially**: bun runs files one after another
+  in one process (module state is shared) and a file's tests in order — that
+  is what one-transaction-per-test needs. Never use `test.concurrent`;
+  `beginTest()` refuses to open a second test while one is open.
+- **Vitest** (`feather-testing-postgres/vitest`): `createDbTest(options)` is a
+  `test.extend` with the same four fixtures (`dbEngine` file-scoped; Vitest
+  ≥ 3.2). Only the fixtures a test destructures are set up.
+- **Factories** (`feather-testing-postgres/drizzle`): `factory(table, defaults)`
+  → `insert(db, overrides?)`, `insertMany(db, n, overrides?)`, `build(overrides?)`,
+  typed from `$inferInsert`/`$inferSelect`; `seq((n) => …)` for unique values.
+  Overrides become required when a required column has no default.
+
+### PGlite gaps
+
+PGlite runs the real Postgres engine, but it is not a server:
+
+- **Extensions must be imported as PGlite modules** and passed in
+  (`pglite: { extensions: { vector } }`); `CREATE EXTENSION` alone fails for
+  anything not bundled.
+- **One connection.** Queries serialise; overlapping transactions queue.
+- **`now()` is frozen within a test** under `tx` (true on Postgres too: it is
+  the transaction start time). Use `clone` or `clock_timestamp()` when time
+  must move.
+- **No cross-process `LISTEN/NOTIFY`**, no replication, no other clients.
+
+So **CI runs a real-Postgres lane pinned to production's major version**
+(`FEATHER_DB=postgres`, e.g. a `postgres:17` service) alongside the PGlite
+lane; this repo's own CI does exactly that.
+
+### Component tests under bun
+
+The `/react` entry runs under `bun test` with happy-dom: preload
+`feather-testing-postgres/happy-dom` (bunfig `[test] preload`, or
+`bun test --preload`). It registers happy-dom's DOM globals but keeps Bun's
+own `fetch`/`Request`/`Response`. Vitest keeps `environment: 'jsdom'`.
+
+## Quick start (server test, postgres.js + Vitest)
 
 ```ts
 // test/pg-test.ts — bind the library to your app once
@@ -109,8 +249,11 @@ all run inside the per-test transaction:
 | `api` | Anonymous in-process client (`get/post/put/delete/fetch`). |
 | `admin` | Administrator-authenticated client. |
 | `client` | A freshly created regular user (default roles from `options.defaultRoles`). |
-| `seed(table, values)` | Insert a row through the REAL save lifecycle as admin. Returns the saved row, including its `row_id`. |
+| `seed(table, values)` | Insert a row. Default: through the REAL save lifecycle (`POST /api/save_row` as admin). Pass `seed: (table, values, { db, api, admin }) => …` in the bindings to seed your own way. Returns the saved row, including its `row_id`. |
 | `createUser(opts)` | Create another user (email/fullName/roles); returns an authenticated client. |
+
+`mintToken` and `insertUser` are optional bindings: leave them out when the
+app has no users, and only `admin` / `client` / `createUser` will ask for them.
 
 Clients throw `TestApiError { status, type, fields }` on non-2xx — assert
 with `rejects.toMatchObject({ status: 403 })`.
@@ -186,11 +329,14 @@ npm install -D feather-testing-postgres
 `feather-testing-core` comes along as a dependency — it is where the Session
 DSL lives.
 
-Peer dependencies: `vitest` (always), plus `react`, `react-dom`,
+Peer dependencies, all optional — install what your setup uses: `vitest`
+(Vitest helpers), `postgres` (postgres.js under Node), `@electric-sql/pglite`
+(the PGlite engine), `drizzle-orm` 0.45.x (`db` handles, migrations,
+factories), `@happy-dom/global-registrator` (component tests under bun), plus `react`, `react-dom`,
 `@tanstack/react-query`, `@tanstack/react-router`, and
 `@testing-library/{dom,react,user-event}` for the `/react` and `/session`
-entry points (optional for server-only usage). The package ships TypeScript
-source — vitest transforms it natively, so no build step is involved.
+entry points. The package ships TypeScript source — Bun and Vitest transform
+it natively, so no build step is involved.
 
 ## Adding the sandbox seam to your app
 
@@ -245,14 +391,18 @@ driven through `createPgTest` against a **real** Postgres
 does not run — the shapes a consumer binds this harness with, so a type that
 drifts fails here rather than in the consumer's repo.
 
-The sandbox suite needs a throwaway database; it creates and drops its own
-tables inside it:
+Four lanes — each runner on each engine:
 
 ```bash
+npm run test:vitest:pglite      # = npm test with FEATHER_DB unset
+npm run test:bun:pglite
 createdb feather_harness_test
-DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/feather_harness_test npm test
+export DATABASE_URL=postgres://localhost:5432/feather_harness_test
+npm run test:vitest:postgres    # also runs the postgres.js delegate suite
+npm run test:bun:postgres
 ```
 
-That URL is also the default, so `npm test` works once the database exists.
-Never point it at a database you care about — the suite drops its tables on
-the way in and out.
+`tests/contract/` holds suites written once and run by both runners
+(`tests/bun/`, `tests/vitest/`). Never point `DATABASE_URL` at a database you
+care about — the suites create and drop tables in it, and `clone` creates and
+drops `feather_tpl_*` / `feather_t_*` databases next to it.

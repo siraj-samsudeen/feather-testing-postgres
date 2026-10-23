@@ -2,6 +2,26 @@
 
 Releases follow [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+Additive — every 0.2 export keeps its meaning.
+
+- **Engines and strategies**: `createFeatherDb({ engine, strategy, ... })` with
+  `start / migrateOnce / beginTest / endTest / close`. Engines `pglite` and
+  `postgres` (Bun.sql or postgres.js), chosen by `FEATHER_DB` (default
+  `pglite`); strategies `tx` (default) and `clone`. `beginTest()` returns a
+  Drizzle handle to inject into the app (`createApp({ db })`), raw `sql`, and
+  the driver handle.
+- **Fixtures**: `postgresFixtures()` (plain `{ scope, deps, setup, teardown }`
+  definitions), `useFixtures()`; bun:test helpers `sandboxEach()` /
+  `useBunFixtures()` (`/bun`); Vitest `createDbTest()` (`/vitest`).
+- **`/drizzle`**: `factory(table, defaults)` and `seq()`.
+- **`/happy-dom`**: run the `/react` entry under bun:test.
+- `createPgTest`: `seed` is a binding callback (default `saveRowSeed`, the
+  0.2 behaviour); `mintToken` and `insertUser` are optional.
+- Peers: `vitest` becomes optional; `postgres`, `@electric-sql/pglite`,
+  `drizzle-orm`, `@happy-dom/global-registrator` are new optional peers.
+
 ## 0.2.0
 
 - **Breaking:** `seed(table, values)` now posts to `/api/save_row` with
