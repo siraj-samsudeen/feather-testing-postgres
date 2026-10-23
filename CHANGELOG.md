@@ -19,6 +19,10 @@ Additive — every 0.2 export keeps its meaning.
 - **`/happy-dom`**: run the `/react` entry under bun:test.
 - `createPgTest`: `seed` is a binding callback (default `saveRowSeed`, the
   0.2 behaviour); `mintToken` and `insertUser` are optional.
+- `feather-testing-core` moves from `dependencies` to an optional peer
+  (`>=0.4.0 <0.8`; `^0.7.0` once 0.7 is released), so an app no longer gets a
+  second nested copy next to its own. Install it yourself if you use
+  `/session` or `/react`.
 - Peers: `vitest` becomes optional; `postgres`, `@electric-sql/pglite`,
   `drizzle-orm`, `@happy-dom/global-registrator` are new optional peers.
 

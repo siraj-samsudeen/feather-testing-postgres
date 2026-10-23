@@ -338,8 +338,11 @@ Chain:
 npm install -D feather-testing-postgres
 ```
 
-`feather-testing-core` comes along as a dependency — it is where the Session
-DSL lives.
+`feather-testing-core` is a peer dependency (optional: only the `/session` and
+`/react` entries need it — it is where the Session DSL lives), so your app and
+this package share one copy. Install it alongside: `npm install -D
+feather-testing-core`. The range is `>=0.4.0 <0.8` for now; it becomes
+`^0.7.0` when core 0.7 (with the fixture engine) is released.
 
 Peer dependencies, all optional — install what your setup uses: `vitest`
 (Vitest helpers), `postgres` (postgres.js under Node), `@electric-sql/pglite`

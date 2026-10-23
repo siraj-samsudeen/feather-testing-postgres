@@ -51,9 +51,6 @@
     "test:lanes": "npm run test:vitest:pglite && npm run test:bun:pglite && npm run test:vitest:postgres && npm run test:bun:postgres",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "feather-testing-core": "^0.4.0"
-  },
   "peerDependencies": {
     "@electric-sql/pglite": ">=0.3",
     "@happy-dom/global-registrator": ">=15",
@@ -63,6 +60,7 @@
     "@testing-library/react": ">=16",
     "@testing-library/user-event": ">=14",
     "drizzle-orm": ">=0.44 <1",
+    "feather-testing-core": ">=0.4.0 <0.8",
     "postgres": ">=3",
     "react": ">=18",
     "react-dom": ">=18",
@@ -91,6 +89,9 @@
       "optional": true
     },
     "drizzle-orm": {
+      "optional": true
+    },
+    "feather-testing-core": {
       "optional": true
     },
     "postgres": {
@@ -122,6 +123,7 @@
     "drizzle-kit": "^0.31.11",
     "drizzle-orm": "~0.45.4",
     "elysia": "^1.4.30",
+    "feather-testing-core": "^0.4.0",
     "feather-testing-core-next": "file:./tests/vendor/feather-testing-core-0.7.0-beta.1.tgz",
     "jsdom": "^28.1.0",
     "postgres": "^3.4.9",
