@@ -34,7 +34,7 @@ export function failedStartContract({ describe, test, expect }: RunnerApi) {
             closed++
             await close()
           }
-          await expect(postgresFixtures(fdb).dbEngine.setup({})).rejects.toThrow(error)
+          await expect(postgresFixtures(fdb).dbEngine[0]({}, async () => {})).rejects.toThrow(error)
           expect(closed).toBe(1)
           expect(await leftoverTemplates()).toBe(0)
         }, 30_000)

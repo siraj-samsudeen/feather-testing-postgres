@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'bun:test'
 import { count } from 'drizzle-orm'
 import { postgresFixtures, type FeatherDb, type TestDb } from '../../src/fixtures'
-import { sandboxEach } from '../../src/bun'
+import { sandboxEach, useBunFixtures } from '../../src/bun'
 import { users } from '../fixtures/schema'
 import { MIGRATIONS } from '../contract/runner'
 
@@ -26,30 +26,44 @@ describe('sandboxEach()', () => {
   })
 })
 
-describe('postgresFixtures(): definitions a fixture engine can drive', () => {
+describe('postgresFixtures(): definitions in the Playwright/core fixture shape', () => {
   const defs = postgresFixtures({ migrations: MIGRATIONS })
 
   test('declares scopes and dependencies', () => {
-    expect(defs.dbEngine.scope).toBe('file')
-    expect(defs.testDb).toMatchObject({ scope: 'test', deps: ['dbEngine'] })
-    expect(defs.db).toMatchObject({ scope: 'test', deps: ['testDb'] })
-    expect(defs.sql).toMatchObject({ scope: 'test', deps: ['testDb'] })
+    expect(defs.dbEngine[1]).toMatchObject({ scope: 'file', deps: [] })
+    expect(defs.testDb[1]).toMatchObject({ scope: 'test', deps: ['dbEngine'] })
+    expect(defs.db[1]).toMatchObject({ scope: 'test', deps: ['testDb'] })
+    expect(defs.sql[1]).toMatchObject({ scope: 'test', deps: ['testDb'] })
   })
 
-  test('set up and torn down by hand, as an engine would', async () => {
-    const dbEngine = (await defs.dbEngine.setup({})) as FeatherDb
-    try {
-      for (const round of [1, 2]) {
-        const testDb = (await defs.testDb.setup({ dbEngine })) as TestDb
-        const db = await defs.db.setup({ testDb })
-        const sql = await defs.sql.setup({ testDb })
-        const [{ n }] = await sql<{ n: number }>`select count(*)::int as n from users`
-        expect(n).toBe(0) // round 2 sees nothing from round 1
-        await db.insert(users).values({ email: `r${round}@x.test`, name: 'R' })
-        await defs.testDb.teardown!(testDb, { dbEngine })
-      }
-    } finally {
-      await defs.dbEngine.teardown!(dbEngine, {})
-    }
+  test('driven by hand through use(), as any fixture engine would', async () => {
+    const rounds: number[] = []
+    await defs.dbEngine[0]({}, async (dbEngine: FeatherDb) => {
+      for (const round of [1, 2])
+        await defs.testDb[0]({ dbEngine }, async (testDb: TestDb) => {
+          await defs.sql[0]({ testDb }, async (sql) => {
+            const [{ n }] = await sql<{ n: number }>`select count(*)::int as n from users`
+            rounds.push(n) // round 2 sees nothing from round 1
+          })
+          await defs.db[0]({ testDb }, async (db) => {
+            await db.insert(users).values({ email: `r${round}@x.test`, name: 'R' })
+          })
+        })
+    })
+    expect(rounds).toEqual([0, 0])
+  })
+})
+
+describe('useFixtures(): plain values, { value: true } functions, destructured deps', () => {
+  const greet = (n: string) => `hi ${n}`
+  const t = useBunFixtures({
+    name: 'Ada',
+    greet: [greet, { value: true }] as const,
+    greeting: async ({ name, greet }: { name: string; greet: (n: string) => string }, use: (v: string) => Promise<void>) =>
+      use(greet(name)),
+  })
+  test('resolves them in dependency order', () => {
+    expect(t.greeting).toBe('hi Ada')
+    expect(t.greet).toBe(greet)
   })
 })

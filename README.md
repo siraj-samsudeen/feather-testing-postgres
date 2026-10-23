@@ -87,7 +87,7 @@ import { factory, seq } from 'feather-testing-postgres/drizzle'
 
 const t = useBunFixtures({
   ...postgresFixtures({ migrations: './drizzle' }),   // engine from FEATHER_DB
-  app: { scope: 'test', deps: ['db'], setup: ({ db }) => createApp({ db }) },
+  app: async ({ db }, use) => use(createApp({ db })),
 })
 const userFactory = factory(users, { email: seq((n) => `u${n}@x.test`), name: 'Ada' })
 
@@ -129,8 +129,9 @@ await fdb.close()
 template returning rows, plus `sql.unsafe(text, params)`, on the same
 transaction; `raw` is the driver's own handle.
 
-**Fixtures.** `postgresFixtures(options | fdb)` returns plain definitions any
-fixture engine can drive — `{ scope, deps?, setup(deps), teardown?(value, deps) }`:
+**Fixtures.** `postgresFixtures(options | fdb)` returns definitions in the
+Playwright Test shape that feather-testing-core's fixture engine takes — each
+is `[async (deps, use) => { …; await use(value); …teardown }, { scope, deps }]`:
 
 | Fixture | Scope | Deps | Value |
 |---|---|---|---|
@@ -140,6 +141,17 @@ fixture engine can drive — `{ scope, deps?, setup(deps), teardown?(value, deps
 | `sql` | test | `testDb` | raw SQL on the same transaction |
 
 Runner helpers on top of them:
+
+- **feather-testing-core ≥ 0.7** (optional peer): a test names what it needs,
+  and only that is set up.
+
+  ```ts
+  import { afterAll, test as bunTest } from 'bun:test'
+  import { coreFixtures, defineTest } from 'feather-testing-core/fixtures'
+  export const test = defineTest({ test: bunTest, afterAll }, coreFixtures())
+    .extend(postgresFixtures({ migrations: './drizzle' }))
+  test('lists todos', async ({ db }) => { /* … */ })
+  ```
 
 - **bun:test** (`feather-testing-postgres/bun`): `sandboxEach(options)` returns
   live `{ db, sql, testDb, dbEngine }`; `useBunFixtures(defs)` runs your own

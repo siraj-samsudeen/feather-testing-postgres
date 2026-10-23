@@ -28,8 +28,13 @@ export {
   postgresFixtures,
   useFixtures,
   type FixtureDef,
+  type FixtureFn,
+  type FixtureOptions,
   type FixtureScope,
+  type FixtureValues,
   type LifecycleHooks,
   type PostgresFixtures,
+  type PostgresFixtureValues,
+  type Use,
 } from './fixtures'
 export { createDbTest, type DbTestFixtures } from './vitest'

@@ -27,7 +27,8 @@ const userFactory = factory(users, { email: seq((n) => `u${n}@x.test`), name: 'U
 describe('Elysia app with an injected db', () => {
   const t = useBunFixtures({
     ...postgresFixtures({ migrations: MIGRATIONS }),
-    app: { scope: 'test', deps: ['db'], setup: ({ db }: { db: FeatherDrizzleDb }) => createApp({ db }) },
+    app: async ({ db }: { db: FeatherDrizzleDb }, use: (app: ReturnType<typeof createApp>) => Promise<void>) =>
+      use(createApp({ db })),
   })
 
   test('app.handle() sees the fixture rows and its own writes', async () => {

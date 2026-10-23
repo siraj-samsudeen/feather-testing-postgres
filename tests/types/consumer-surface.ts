@@ -153,13 +153,12 @@ async function engineSurface() {
 }
 void engineSurface
 const defs = postgresFixtures(fdb)
-const scope: 'file' = defs.dbEngine.scope as 'file'
+const scope = defs.dbEngine[1].scope
 void scope
-const appDef: FixtureDef<{ db: FeatherDrizzleDb }, { db: FeatherDrizzleDb }> = {
-  scope: 'test',
-  deps: ['db'],
-  setup: ({ db }) => ({ db }),
-}
+const appDef: FixtureDef<{ db: FeatherDrizzleDb }, { db: FeatherDrizzleDb }> = [
+  async ({ db }, use) => use({ db }),
+  { deps: ['db'] },
+]
 void appDef
 void useFixtures
 void createDbTest

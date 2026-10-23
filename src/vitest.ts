@@ -16,36 +16,12 @@ export interface DbTestFixtures<TDb = any> {
 }
 
 export function createDbTest<TDb = any>(options: FeatherDbOptions | FeatherDb<TDb> = {}) {
+  // The same definitions as everywhere else; Vitest takes the Playwright shape
+  // too (it reads dependencies from each function's destructuring), minus the
+  // `deps` option it doesn't know.
   const f = postgresFixtures<TDb>(options)
-  // Vitest reads each fixture's dependencies from its destructuring pattern,
-  // so the definitions are spelled out rather than generated.
-  return base.extend<DbTestFixtures<TDb>>({
-    dbEngine: [
-      // eslint-disable-next-line no-empty-pattern
-      async ({}, use) => {
-        const fdb = await f.dbEngine.setup({})
-        try {
-          await use(fdb)
-        } finally {
-          await f.dbEngine.teardown!(fdb, {})
-        }
-      },
-      { scope: 'file' },
-    ],
-    testDb: async ({ dbEngine }, use) => {
-      const t = await f.testDb.setup({ dbEngine })
-      try {
-        await use(t)
-      } finally {
-        await f.testDb.teardown!(t, { dbEngine })
-      }
-    },
-    // Annotated: a generic TDb defeats Vitest's contextual typing.
-    db: async ({ testDb }: { testDb: TestDb<TDb> }, use: (v: TDb) => Promise<void>) => {
-      await use(testDb.db)
-    },
-    sql: async ({ testDb }: { testDb: TestDb<TDb> }, use: (v: SqlRunner) => Promise<void>) => {
-      await use(testDb.sql)
-    },
-  })
+  const defs = Object.fromEntries(
+    Object.entries(f).map(([k, [fn, { scope }]]) => [k, [fn, { scope: scope === 'file' ? 'file' : 'test' }]]),
+  )
+  return base.extend<DbTestFixtures<TDb>>(defs as never)
 }

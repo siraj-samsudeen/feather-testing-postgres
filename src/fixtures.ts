@@ -1,6 +1,9 @@
-// The engines as plain fixture definitions — no runner imported. Any fixture
-// engine can drive them (feather-testing-core's runner-agnostic `defineTest`,
-// or the standalone `useFixtures` below, which is what `sandboxEach` uses):
+// The engines as fixture definitions in the Playwright Test shape that
+// feather-testing-core's fixture engine (`feather-testing-core/fixtures`,
+// 0.7+) takes — so they plug straight in, with core an optional peer:
+//
+//   const test = defineTest({ test, afterAll }, coreFixtures()).extend(postgresFixtures())
+//   test('lists todos', async ({ db }) => { ... })   // only what is named is set up
 //
 //   dbEngine  file scope   start() + migrations once per file; close() after
 //   testDb    test scope   beginTest() → { db, sql, raw }; endTest() after
@@ -8,6 +11,8 @@
 //   sql       test scope   testDb.sql — raw SQL on the same transaction
 //
 // `db` and `sql` share one `testDb`, so they always see the same transaction.
+// Without core, `useFixtures` below (and `sandboxEach` in /bun) drives the
+// same definitions on before/after hooks.
 
 import {
   createFeatherDb,
@@ -19,22 +24,34 @@ import {
 
 export type { FeatherDb, FeatherDbOptions, SqlRunner, TestDb } from './engine'
 
-export type FixtureScope = 'test' | 'file'
+/** Hand the fixture's value to the test; resolves once the test is done. */
+export type Use<T> = (value: T) => Promise<void>
+/** Set up, `use` the value, then tear down. */
+export type FixtureFn<T, D = any> = (deps: D, use: Use<T>, info?: unknown) => Promise<void>
+export type FixtureScope = 'test' | 'file' | 'worker'
+export interface FixtureOptions {
+  /** 'test' (default) or 'file' (alias 'worker'): once per file. */
+  scope?: FixtureScope
+  /** Dependencies, when they can't be read from the first parameter. */
+  deps?: string[]
+  /** Treat a function as the fixture's value, not as a fixture function. */
+  value?: boolean
+}
+/** A plain value, a fixture function, or either with options — core's shape. */
+export type FixtureDef<T, D = any> = T | FixtureFn<T, D> | [T | FixtureFn<T, D>, FixtureOptions]
 
-/** One fixture: set up before the tests that need it, torn down after.
- * `deps` names the fixtures `setup`/`teardown` receive. */
-export interface FixtureDef<T, D = Record<string, never>> {
-  scope: FixtureScope
-  deps?: readonly string[]
-  setup(deps: D): T | Promise<T>
-  teardown?(value: T, deps: D): void | Promise<void>
+export interface PostgresFixtureValues<TDb = any> {
+  dbEngine: FeatherDb<TDb>
+  testDb: TestDb<TDb>
+  db: TDb
+  sql: SqlRunner
 }
 
 export interface PostgresFixtures<TDb = any> {
-  dbEngine: FixtureDef<FeatherDb<TDb>, {}>
-  testDb: FixtureDef<TestDb<TDb>, { dbEngine: FeatherDb<TDb> }>
-  db: FixtureDef<TDb, { testDb: TestDb<TDb> }>
-  sql: FixtureDef<SqlRunner, { testDb: TestDb<TDb> }>
+  dbEngine: [FixtureFn<FeatherDb<TDb>, {}>, FixtureOptions]
+  testDb: [FixtureFn<TestDb<TDb>, { dbEngine: FeatherDb<TDb> }>, FixtureOptions]
+  db: [FixtureFn<TDb, { testDb: TestDb<TDb> }>, FixtureOptions]
+  sql: [FixtureFn<SqlRunner, { testDb: TestDb<TDb> }>, FixtureOptions]
 }
 
 function isFeatherDb(x: unknown): x is FeatherDb {
@@ -48,9 +65,9 @@ export function postgresFixtures<TDb = any>(
   options: FeatherDbOptions | FeatherDb<TDb> = {},
 ): PostgresFixtures<TDb> {
   return {
-    dbEngine: {
-      scope: 'file',
-      async setup() {
+    dbEngine: [
+      // eslint-disable-next-line no-empty-pattern
+      async ({}, use) => {
         const fdb = isFeatherDb(options) ? options : createFeatherDb<TDb>(options)
         try {
           await fdb.start()
@@ -60,23 +77,43 @@ export function postgresFixtures<TDb = any>(
           await fdb.close().catch(() => {})
           throw e
         }
-        return fdb
+        try {
+          await use(fdb)
+        } finally {
+          await fdb.close()
+        }
       },
-      teardown: (fdb) => fdb.close(),
-    },
-    testDb: {
-      scope: 'test',
-      deps: ['dbEngine'],
-      setup: ({ dbEngine }) => dbEngine.beginTest(),
-      teardown: (_t, { dbEngine }) => dbEngine.endTest(),
-    },
-    db: { scope: 'test', deps: ['testDb'], setup: ({ testDb }) => testDb.db },
-    sql: { scope: 'test', deps: ['testDb'], setup: ({ testDb }) => testDb.sql },
+      { scope: 'file', deps: [] },
+    ],
+    testDb: [
+      async ({ dbEngine }, use) => {
+        const t = await dbEngine.beginTest()
+        try {
+          await use(t)
+        } finally {
+          await dbEngine.endTest()
+        }
+      },
+      { scope: 'test', deps: ['dbEngine'] },
+    ],
+    db: [
+      async ({ testDb }, use) => {
+        await use(testDb.db)
+      },
+      { scope: 'test', deps: ['testDb'] },
+    ],
+    sql: [
+      async ({ testDb }, use) => {
+        await use(testDb.sql)
+      },
+      { scope: 'test', deps: ['testDb'] },
+    ],
   }
 }
 
-type AnyDefs<F> = { [K in keyof F]: FixtureDef<any, any> }
-type Values<F extends AnyDefs<F>> = { [K in keyof F]: F[K] extends FixtureDef<infer T, any> ? T : never }
+// ---------------------------------------------------------------------------
+// A minimal runner for the same definitions, for runners without a fixture
+// engine (no dependency on feather-testing-core).
 
 export interface LifecycleHooks {
   beforeAll(fn: () => unknown): void
@@ -85,41 +122,108 @@ export interface LifecycleHooks {
   afterEach(fn: () => unknown): void
 }
 
-/** A minimal fixture runner on before/after hooks, for runners without a
- * fixture engine. Every fixture is set up (hooks can't see what a test
- * destructures); file-scoped ones once per file, test-scoped ones per test,
- * in dependency order, torn down in reverse. Returns live getters.
- * Tests must run sequentially — never test.concurrent. */
-export function useFixtures<F extends AnyDefs<F>>(fixtures: F, hooks: LifecycleHooks): Values<F> {
-  const defs = fixtures as unknown as Record<string, FixtureDef<any, any>>
+// (readonly too, so `[fn, { value: true }] as const` keeps its types)
+type ValueOf<D> = D extends readonly [infer X, FixtureOptions]
+  ? X extends FixtureFn<infer T, any>
+    ? T
+    : X
+  : D extends FixtureFn<infer T, any>
+    ? T
+    : D
+export type FixtureValues<F> = { [K in keyof F]: ValueOf<F[K]> }
+
+/** The names a function's first parameter destructures: `({ a, b: x }) =>`. */
+function destructured(fn: Function): string[] {
+  const m = /^[^(]*\(\s*\{([^}]*)\}/.exec(fn.toString())
+  if (!m) return []
+  return m[1]
+    .split(',')
+    .map((p) => p.split(/[:=]/)[0].trim())
+    .filter((p) => p && !p.startsWith('...'))
+}
+
+interface Normal {
+  fn: FixtureFn<unknown> | null
+  value: unknown
+  scope: 'test' | 'file'
+  deps: string[]
+}
+
+function normalise(def: unknown): Normal {
+  const [v, o] = Array.isArray(def) && def.length === 2 && def[1] && typeof def[1] === 'object' && !Array.isArray(def[1])
+    ? (def as [unknown, FixtureOptions])
+    : [def, {} as FixtureOptions]
+  const isFn = typeof v === 'function' && !o.value
+  return {
+    fn: isFn ? (v as FixtureFn<unknown>) : null,
+    value: v,
+    scope: o.scope === 'file' || o.scope === 'worker' ? 'file' : 'test',
+    deps: o.deps ?? (isFn ? destructured(v as Function) : []),
+  }
+}
+
+/** Runs fixture definitions on before/after hooks. Every fixture is set up
+ * (hooks can't see what a test destructures): file-scoped once per file,
+ * test-scoped per test, in dependency order, torn down in reverse. Returns
+ * live getters. Tests must run sequentially — never test.concurrent. */
+export function useFixtures<F extends object>(fixtures: F, hooks: LifecycleHooks): FixtureValues<F> {
+  const defs = Object.fromEntries(Object.entries(fixtures).map(([k, d]) => [k, normalise(d)]))
   const order: string[] = []
   const visit = (k: string, path: string[] = []) => {
     if (order.includes(k)) return
     if (path.includes(k)) throw new Error(`fixture cycle: ${[...path, k].join(' → ')}`)
-    if (!defs[k]) throw new Error(`unknown fixture '${k}'`)
-    for (const d of defs[k].deps ?? []) visit(d, [...path, k])
+    if (!defs[k]) throw new Error(`unknown fixture '${k}'${path.length ? ` (needed by '${path.at(-1)}')` : ''}`)
+    for (const d of defs[k].deps) visit(d, [...path, k])
     order.push(k)
   }
   for (const k of Object.keys(defs)) visit(k)
 
   const values: Record<string, unknown> = {}
-  const live = new Set<string>()
-  const depsOf = (k: string) => Object.fromEntries((defs[k].deps ?? []).map((d) => [d, values[d]]))
+  const finishers = new Map<string, () => Promise<void>>()
 
-  const setupScope = async (scope: FixtureScope) => {
-    for (const k of order)
-      if (defs[k].scope === scope) {
-        values[k] = await defs[k].setup(depsOf(k))
-        live.add(k)
-      }
+  async function setUp(k: string) {
+    const d = defs[k]
+    if (!d.fn) {
+      values[k] = d.value
+      finishers.set(k, async () => {})
+      return
+    }
+    const deps = Object.fromEntries(d.deps.map((n) => [n, values[n]]))
+    let release!: () => void
+    const released = new Promise<void>((r) => (release = r))
+    let handOver!: (v: unknown) => void
+    const handed = new Promise<unknown>((r) => (handOver = r))
+    const done = d.fn(
+      deps,
+      async (v) => {
+        handOver(v)
+        await released
+      },
+      { title: '', status: 'running' },
+    )
+    values[k] = await Promise.race([
+      handed,
+      done.then(() => {
+        throw new Error(`fixture '${k}' finished without calling use()`)
+      }),
+    ])
+    finishers.set(k, async () => {
+      release()
+      await done
+    })
   }
-  const teardownScope = async (scope: FixtureScope) => {
+
+  const setupScope = async (scope: 'test' | 'file') => {
+    for (const k of order) if (defs[k].scope === scope) await setUp(k)
+  }
+  const teardownScope = async (scope: 'test' | 'file') => {
     let first: unknown
     for (const k of [...order].reverse())
-      if (defs[k].scope === scope && live.has(k)) {
-        live.delete(k)
+      if (defs[k].scope === scope && finishers.has(k)) {
+        const finish = finishers.get(k)!
+        finishers.delete(k)
         try {
-          await defs[k].teardown?.(values[k], depsOf(k))
+          await finish()
         } catch (e) {
           first ??= e
         }
@@ -133,12 +237,12 @@ export function useFixtures<F extends AnyDefs<F>>(fixtures: F, hooks: LifecycleH
   hooks.beforeEach(() => setupScope('test'))
   hooks.afterEach(() => teardownScope('test'))
 
-  const out = {} as Values<F>
+  const out = {} as FixtureValues<F>
   for (const k of Object.keys(defs))
     Object.defineProperty(out, k, {
       enumerable: true,
       get() {
-        if (!live.has(k))
+        if (!finishers.has(k))
           throw new Error(
             `fixture '${k}' is not available here (${defs[k].scope}-scoped: read it inside a test${defs[k].scope === 'file' ? ' or hook' : ''})`,
           )
