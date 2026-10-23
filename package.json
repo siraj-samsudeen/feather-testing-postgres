@@ -29,7 +29,8 @@
     "./vitest": "./src/vitest.ts",
     "./drizzle": "./src/drizzle.ts",
     "./react": "./src/react.tsx",
-    "./session": "./src/session.ts"
+    "./session": "./src/session.ts",
+    "./happy-dom": "./src/happy-dom.ts"
   },
   "files": [
     "src",
@@ -46,6 +47,7 @@
   },
   "peerDependencies": {
     "@electric-sql/pglite": ">=0.3",
+    "@happy-dom/global-registrator": ">=15",
     "@tanstack/react-query": ">=5",
     "@tanstack/react-router": ">=1",
     "@testing-library/dom": ">=10",
@@ -59,6 +61,9 @@
   },
   "peerDependenciesMeta": {
     "@electric-sql/pglite": {
+      "optional": true
+    },
+    "@happy-dom/global-registrator": {
       "optional": true
     },
     "@tanstack/react-query": {
