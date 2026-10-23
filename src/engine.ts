@@ -534,7 +534,9 @@ function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
       get(target, prop) {
         if (prop === '$client') throw clientHiddenError()
         if (prop === 'transaction')
-          return (fn: (tx: unknown) => Promise<unknown>, config?: unknown) => {
+          // config (isolation level, access mode, deferrable) is dropped: a
+          // SAVEPOINT can't change the test transaction's mode
+          return (fn: (tx: unknown) => Promise<unknown>, _config?: unknown) => {
             const parent = active.getStore() ?? own
             if (sched.ended) return Promise.reject(sched.endedError())
             const ahead = parent.tail
@@ -559,7 +561,7 @@ function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
                   // finishes while a child's savepoint is open.
                   await self.tail
                   return result
-                }, config),
+                }),
               )
             })
             // still after whatever was ahead, even if this one gave up waiting

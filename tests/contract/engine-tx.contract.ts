@@ -433,6 +433,19 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
       expect(n).toBe(0)
     })
 
+    test('transaction config (isolation level, access mode, deferrable) is accepted and ignored under tx', async () => {
+      await t.db.transaction(
+        async (tx: any) => {
+          await tx.insert(todos).values({ title: 'serializable, as far as the app knows' })
+          await tx.transaction(async (tx2: any) => {
+            await tx2.insert(todos).values({ title: 'nested' })
+          })
+        },
+        { isolationLevel: 'serializable', accessMode: 'read write', deferrable: true },
+      )
+      expect((await titles()).sort()).toEqual(['nested', 'serializable, as far as the app knows'])
+    })
+
     test('refuses a second open test (sequential tests only)', async () => {
       await expect(fdb.beginTest()).rejects.toThrow(/sequentially/)
     })

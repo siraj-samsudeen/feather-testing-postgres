@@ -240,6 +240,11 @@ PGlite runs the real Postgres engine, but it is not a server:
 - **`now()` is frozen within a test** under `tx` (true on Postgres too: it is
   the transaction start time). Use `clone` or `clock_timestamp()` when time
   must move.
+- **Transaction options are ignored under `tx`**: `db.transaction(fn, {
+  isolationLevel, accessMode, deferrable })` runs, but as a SAVEPOINT in the
+  test's transaction, whose mode it can't change. Code that depends on
+  isolation (serialization failures, read-only enforcement) belongs in a
+  `clone` file, where transactions are real.
 - **No cross-process `LISTEN/NOTIFY`**, no replication, no other clients.
 
 So **CI runs a real-Postgres lane pinned to production's major version**
