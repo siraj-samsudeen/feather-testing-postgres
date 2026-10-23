@@ -38,7 +38,11 @@ Additive — every 0.2 export keeps its meaning.
   selectors are refused) unless `allowAnyDatabase: true`, and the server's
   `current_database()` is checked after connecting. The driver is always
   handed the path's database explicitly (Bun.sql otherwise lets `PGDATABASE`
-  override the path).
+  override the path). **The URL must include the database name**: an empty
+  path is refused (no fallback to `PGDATABASE` or the user). The library's
+  own SQL runs with `search_path` pinned to `pg_catalog, pg_temp` (tests keep
+  their own), so user-defined functions or operators can't stand in for
+  built-ins.
 - The bun entry and every runner-free module type-check without vitest (the
   createPgTest types moved to `client.ts`, `DbTestFixtures` to `fixtures.ts`;
   both still re-exported where they were). Use `customConditions: ["bun"]`

@@ -125,12 +125,18 @@ Tests never run against a non-test database by accident. The URL is the
 
 - the database it names must look like a test database (`test` as a word
   part: `app_test`, `test_db`, `my-test-db`) — unless `allowAnyDatabase: true`;
-- it must name it in its path: a URL that selects the database through a
-  query parameter (`?database=`, which both drivers honour) is refused;
-- after connecting, the server's own `current_database()` is checked the same
-  way — this catches an empty path resolved through `PGDATABASE` or the user
-  name, and anything else a driver does. Template and clone connections must
-  be exactly the database created for them.
+- **the URL must include the database name** in its path
+  (`postgres://…/app_test`): an empty path is refused (no guessing from
+  `PGDATABASE` or the user), and so is a URL that selects the database through
+  a query parameter (`?database=`, which both drivers honour);
+- after connecting, the server's own `pg_catalog.current_database()` is
+  checked the same way — the backstop for anything a driver does. Template
+  and clone connections must be exactly the database created for them.
+
+The library's own SQL (this check, cleanup, creating and dropping templates
+and clones) runs with `search_path` pinned to `pg_catalog, pg_temp`, so a
+function or operator a user schema defines can't stand in for a built-in.
+The pin never reaches a test: tests keep their own `search_path`.
 
 Refusals name the database and say how to opt in, and happen before any
 migration, `setup` or test runs. `resolveTestDatabaseUrl(options?)` and

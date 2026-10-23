@@ -1,7 +1,6 @@
 // Driver adapters: Bun.sql, postgres.js and PGlite behind one small interface,
 // and the clients drizzle runs a test's queries on.
 
-import { userInfo } from 'node:os'
 import { Scheduler, clientHiddenError, endHeld, endedError, type QueryGate } from './scheduler'
 import { pglitePort, rawFacade, taggedPort, templateToText, type RawSql } from './raw'
 import type { PostgresDriver, SqlRunner } from './engine'
@@ -13,6 +12,10 @@ export interface Conn {
    * returned promise settles when the old pool is closed. */
   retire?: () => { closed: Promise<void> }
   sql: SqlRunner
+  /** Runs the library's own fn in a short transaction of its own with
+   * search_path pinned (SET LOCAL): on a connection tests share, the pin
+   * ends with that transaction and never reaches a test. */
+  pinned<T>(fn: (sql: SqlRunner) => Promise<T>): Promise<T>
   /** Runs fn in a transaction that the caller controls through `release`. */
   hold(graceMs: number): Promise<{ tx: RawSql; client: unknown; sql: SqlRunner; sched: Scheduler; release(): Promise<void> }>
   /** The client drizzle should be built over when no test transaction is held. */
@@ -194,35 +197,37 @@ export function savepointingPgliteTx(tx: any, sched: Scheduler): unknown {
  * this source (it ships as .ts). */
 export const optionalPeer = (name: string): Promise<any> => import(/* @vite-ignore */ name)
 
-/** The database a URL means — the one the driver itself would pick — handed
- * to it explicitly, so it can't be redirected (Bun.sql otherwise lets
- * PGDATABASE override the path, and reads it once per process). The path,
- * else PGDATABASE, else the effective user, in each driver's own order:
- * postgres.js — URL user, PGUSERNAME, PGUSER, the OS account;
- * Bun.sql — URL user, PGUSER, USER, the OS account (PGUSERNAME ignored). */
-export function databaseOf(
-  url: string,
-  driver: PostgresDriver,
-  env: Record<string, string | undefined> = process.env,
-): string {
-  const u = new URL(url)
-  const user =
-    decodeURIComponent(u.username) ||
-    (driver === 'postgres-js' ? env.PGUSERNAME || env.PGUSER : env.PGUSER || env.USER) ||
-    userInfo().username
-  return decodeURIComponent(u.pathname.replace(/^\//, '')) || env.PGDATABASE || user
+/** The search_path the library's own SQL runs under: nothing a user schema
+ * defines (a function, an operator) can stand in for a built-in. */
+export const PINNED_SEARCH_PATH = 'pg_catalog, pg_temp'
+
+/** The database a URL names in its path (the URL is required to name one). */
+function pathDatabase(url: string): string {
+  const name = decodeURIComponent(new URL(url).pathname.replace(/^\//, ''))
+  if (!name) throw new Error('feather-testing-postgres: the database URL must name its database, e.g. postgres://…/app_test')
+  return name
 }
 
-export async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Promise<Conn> {
+/** `pinSearchPath`: for connections only the library uses (admin, cleanup) —
+ * every session starts with PINNED_SEARCH_PATH. The path's database is
+ * handed to the driver explicitly (Bun.sql would otherwise let PGDATABASE
+ * override it). */
+export async function connectPostgres(
+  url: string,
+  driver: PostgresDriver,
+  max = 2,
+  opts: { pinSearchPath?: boolean } = {},
+): Promise<Conn> {
   let make: () => any
-  const database = databaseOf(url, driver)
+  const database = pathDatabase(url)
+  const pinned = opts.pinSearchPath ? { connection: { search_path: PINNED_SEARCH_PATH } } : {}
   if (driver === 'bun') {
     const Bun = (globalThis as any).Bun
     if (!Bun?.SQL) throw new Error("feather-testing-postgres: driver 'bun' needs the Bun runtime; use driver 'postgres-js' under Node")
-    make = () => new Bun.SQL(url, { max, database })
+    make = () => new Bun.SQL(url, { max, database, ...pinned })
   } else {
     const postgres = (await optionalPeer('postgres')).default
-    make = () => postgres(url, { max, database, onnotice: () => {} })
+    make = () => postgres(url, { max, database, onnotice: () => {}, ...pinned })
   }
   const end = (pool: any, timeout: number) => (driver === 'bun' ? pool.close({ timeout }) : pool.end({ timeout }))
   let root = make()
@@ -233,6 +238,12 @@ export async function connectPostgres(url: string, driver: PostgresDriver, max =
     },
     get sql() {
       return taggedSql(root)
+    },
+    pinned(fn) {
+      return root.begin(async (tx: any) => {
+        await tx.unsafe(`set local search_path = ${PINNED_SEARCH_PATH}`)
+        return fn(taggedSql(tx))
+      })
     },
     async hold(graceMs) {
       const pool = root
@@ -278,6 +289,12 @@ export async function bootPglite(options: Record<string, unknown> = {}): Promise
     pg,
     client: pg,
     sql: pgliteSql(pg),
+    pinned(fn) {
+      return pg.transaction(async (tx: any) => {
+        await tx.query(`set local search_path = ${PINNED_SEARCH_PATH}`)
+        return fn(pgliteSql(tx))
+      })
+    },
     async hold(graceMs) {
       const { tx, release } = await holdOpen((fn) => pg.transaction(fn))
       const sched = new Scheduler(graceMs)

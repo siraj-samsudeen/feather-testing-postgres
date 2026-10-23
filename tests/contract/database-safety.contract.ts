@@ -60,9 +60,15 @@ export function databaseSafetyContract({ describe, test, expect }: RunnerApi) {
       expect(resolveTestDatabaseUrl({ url: url('app_test?sslmode=disable') }, {})).toBe(url('app_test?sslmode=disable'))
     })
 
-    test('an empty path is left to the connection-time check (the server reports the real database)', () => {
-      expect(resolveTestDatabaseUrl({ url: 'postgres://localhost:5432' }, {})).toBe('postgres://localhost:5432')
-      expect(resolveTestDatabaseUrl({ url: 'postgres://localhost:5432/' }, {})).toBe('postgres://localhost:5432/')
+    test('a URL must name its database: an empty path is refused, from every source', () => {
+      for (const u of ['postgres://localhost:5432', 'postgres://localhost:5432/', 'postgres://u:p@localhost:5432?sslmode=disable'])
+        for (const [options, env] of [
+          [{ url: u }, {}],
+          [{}, { FEATHER_DATABASE_URL: u }],
+          [{}, { DATABASE_URL: u }],
+          [{ url: u, allowAnyDatabase: true }, {}],
+        ] as const)
+          expect(() => resolveTestDatabaseUrl(options, env)).toThrow(/must name its database, e\.g\. postgres:\/\/…\/app_test/)
     })
 
     test('allowAnyDatabase: true accepts any DATABASE_URL', () => {

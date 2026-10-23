@@ -1,7 +1,7 @@
-// The real check: after connecting, the server's current_database() must be a
-// test database (target, admin) or exactly the database we created (template,
-// clone). This catches what URL parsing can't: an empty path resolved through
-// PGDATABASE or the user name, and drivers that let the environment win.
+// The real check: after connecting, the server's own current_database() must
+// be a test database (target, admin) or exactly the database we created
+// (template, clone) — the backstop behind URL parsing. URLs must name their
+// database; the path wins over PGDATABASE on every driver.
 import { createFeatherDb, type IsolationStrategy, type PostgresDriver } from '../../src/engine'
 import { ENGINE, MIGRATIONS, type RunnerApi } from './runner'
 
@@ -35,33 +35,13 @@ export function currentDatabaseContract({ describe, test, expect }: RunnerApi) {
       for (const strategy of ['tx', 'clone'] as IsolationStrategy[]) {
         const label = `${driver}, ${strategy}`
 
-        test(`an empty path resolved by PGDATABASE to a non-test database is refused (${label})`, async () => {
-          await withEnv({ PGDATABASE: 'postgres' }, async () => {
-            const fdb = createFeatherDb({ driver, strategy, url: server, migrations: MIGRATIONS })
-            try {
-              await expect(fdb.start()).rejects.toThrow(/"postgres"/)
-            } finally {
-              await fdb.close()
-            }
-          })
-        }, 30_000)
-
-        test(`an empty path resolved by PGDATABASE to a test database works, and tests run there (${label})`, async () => {
-          await withEnv({ PGDATABASE: testDb }, async () => {
-            const fdb = createFeatherDb({ driver, strategy, url: server, migrations: MIGRATIONS })
-            try {
-              const t = await fdb.beginTest()
-              const [{ db, user }] = await t.sql<{ db: string; user: string }>`
-                select pg_catalog.current_database() as db, current_user as "user"`
-              // the URL's credentials were used (CI connects with user:password)
-              if (base.username) expect(user).toBe(decodeURIComponent(base.username))
-              if (strategy === 'tx') expect(db).toBe(testDb)
-              else expect(db).toMatch(/^feather_t_/)
-              await fdb.endTest()
-            } finally {
-              await fdb.close()
-            }
-          })
+        test(`an empty-path URL is refused before connecting (${label})`, async () => {
+          const fdb = createFeatherDb({ driver, strategy, url: server, migrations: MIGRATIONS })
+          try {
+            await expect(fdb.start()).rejects.toThrow(/must name its database/)
+          } finally {
+            await fdb.close()
+          }
         }, 30_000)
 
         test(`the URL path wins over PGDATABASE (${label})`, async () => {

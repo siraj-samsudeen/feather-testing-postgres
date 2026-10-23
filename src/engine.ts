@@ -139,8 +139,9 @@ const NAME = /^feather_(?:tpl|t)_([0-9a-f]{8})_([0-9]+)_([0-9a-z]+)(?:_|$)/
 const STALE_AFTER_MS = 3600_000
 
 async function sweep(sql: SqlRunner, opts: { anyHost: boolean; olderThan: number }): Promise<string[]> {
-  const rows = await sql<{ datname: string }>`
-    select datname from pg_catalog.pg_database where datname ~ '^feather_(tpl|t)_[0-9a-f]{8}_[0-9]+_'`
+  // every database, filtered here: no operator in the query a user schema
+  // could stand in for (the connection's search_path is pinned too)
+  const rows = await sql<{ datname: string }>`select datname from pg_catalog.pg_database`
   const dropped: string[] = []
   for (const { datname } of rows) {
     const m = NAME.exec(datname)
@@ -177,7 +178,7 @@ export async function cleanupStale(opts: {
   allowAnyDatabase?: boolean
 }): Promise<string[]> {
   const url = resolveTestDatabaseUrl(opts)
-  const c = await connectPostgres(url, opts.driver ?? defaultDriver(), 1)
+  const c = await connectPostgres(url, opts.driver ?? defaultDriver(), 1, { pinSearchPath: true })
   try {
     await assertTestDatabase(c.sql, opts)
     return await sweep(c.sql, { anyHost: true, olderThan: opts.olderThan })
@@ -206,9 +207,10 @@ function refusal(where: string, name: string): Error {
  * DATABASE_URL. Whichever it is, the database it names must look like a test
  * database (test as a word part) unless `allowAnyDatabase: true`, and it must
  * name it in its path: a URL selecting the database through a query parameter
- * is refused outright. An empty path is left to the check made after
- * connecting (assertTestDatabase), where the server reports the real database.
- * Throws before any connection is made. */
+ * is refused outright, and so is an empty path — the URL must name its
+ * database (no guessing from PGDATABASE or the user). After connecting,
+ * assertTestDatabase checks what the server reports. Throws before any
+ * connection is made. */
 export function resolveTestDatabaseUrl(
   options: { url?: string; allowAnyDatabase?: boolean } = {},
   env: Record<string, string | undefined> = process.env,
@@ -230,7 +232,9 @@ export function resolveTestDatabaseUrl(
         `feather-testing-postgres: refusing a database URL that selects its database outside its path (?${key}=). Name the database in the path.`,
       )
   const name = decodeURIComponent(parsed.pathname.replace(/^\//, ''))
-  if (!name || options.allowAnyDatabase || TEST_DATABASE_NAME.test(name)) return url
+  if (!name)
+    throw new Error('feather-testing-postgres: the database URL must name its database, e.g. postgres://…/app_test')
+  if (options.allowAnyDatabase || TEST_DATABASE_NAME.test(name)) return url
   throw refusal('database', name)
 }
 
@@ -318,7 +322,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
     }
     const tpl = await connectPostgres(withDatabase(requireUrl(), templateName!), driver, 1)
     try {
-      await assertTestDatabase(tpl.sql, { expected: templateName! })
+      await tpl.pinned((sql) => assertTestDatabase(sql, { expected: templateName! }))
       await fn(tpl)
     } finally {
       // CREATE DATABASE … TEMPLATE refuses while anyone is connected to it.
@@ -344,9 +348,10 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       // the server's own answer is checked before anything runs there
       if (strategy === 'tx') {
         conn = await connectPostgres(u, driver, 1)
-        await assertTestDatabase(conn.sql, options)
+        await conn.pinned((sql) => assertTestDatabase(sql, options))
       } else {
-        admin = await connectPostgres(u, driver, 1)
+        // the admin connection is the library's alone: pinned for its session
+        admin = await connectPostgres(u, driver, 1, { pinSearchPath: true })
         await assertTestDatabase(admin.sql, options)
         templateName = `feather_tpl_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}`
         await admin.sql.unsafe(`create database "${templateName}"`)
@@ -435,7 +440,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
         let c: Conn | undefined
         try {
           c = await connectPostgres(withDatabase(requireUrl(), name), driver, options.poolMax ?? DEFAULT_CLONE_POOL_MAX)
-          await assertTestDatabase(c.sql, { expected: name })
+          await c.pinned((sql) => assertTestDatabase(sql, { expected: name }))
         } catch (e) {
           await c?.close(0).catch(() => {})
           await drop().catch(() => {})
