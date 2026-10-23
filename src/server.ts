@@ -15,11 +15,16 @@ export interface AppLike {
 export interface PgTestBindings extends SandboxHooks {
   app: AppLike
   /** Mint a session token for an existing enabled user (no password needed —
-   * bind to the server's issueSession). */
-  mintToken(user: string): Promise<string>
+   * bind to the server's issueSession). Needed by `admin`, `client` and
+   * `createUser`; harnesses without auth can leave it out. */
+  mintToken?(user: string): Promise<string>
   /** Create a user through the real save lifecycle; returns its `row_id`.
-   * Called inside the sandbox, so it rolls back with the test. */
-  insertUser(opts: { email: string; fullName?: string; roles: string[] }): Promise<string>
+   * Called inside the sandbox, so it rolls back with the test. Needed by
+   * `client` and `createUser`. */
+  insertUser?(opts: { email: string; fullName?: string; roles: string[] }): Promise<string>
+  /** How `seed(table, values)` inserts a row. Default (0.2 behaviour): POST
+   * `/api/save_row` as the administrator — featherbase's save endpoint. */
+  seed?: SeedCallback
   /** The administrator account name. Default: 'Administrator'. */
   adminUser?: string
 }
@@ -92,6 +97,31 @@ export type SeedFn = (
   values?: Record<string, unknown>,
 ) => Promise<Record<string, unknown> & { row_id: string }>
 
+/** A consumer-supplied seeding strategy. `db` is the sandbox transaction;
+ * `admin()` lazily builds the administrator client (needs `mintToken`). */
+export type SeedCallback = (
+  table: string,
+  values: Record<string, unknown>,
+  ctx: { db: unknown; api: TestClient; admin: () => Promise<TestClient> },
+) => Promise<Record<string, unknown> & { row_id: string }>
+
+/** The 0.2 default: POST /api/save_row as the administrator. */
+export const saveRowSeed: SeedCallback = async (table, values, { admin }) =>
+  (await (await admin()).post('/api/save_row', { table, row: values })) as Record<string, unknown> & {
+    row_id: string
+  }
+
+function required<K extends 'mintToken' | 'insertUser'>(
+  b: PgTestBindings,
+  key: K,
+  fixture: string,
+): NonNullable<PgTestBindings[K]> {
+  const fn = b[key]
+  if (!fn)
+    throw new Error(`feather-testing-postgres: the '${fixture}' fixture needs \`${key}\` in createPgTest's bindings`)
+  return fn as NonNullable<PgTestBindings[K]>
+}
+
 export type CreateUserFn = (opts?: {
   email?: string
   fullName?: string
@@ -139,29 +169,31 @@ export function createPgTest(b: PgTestBindings, opts: PgTestOptions = {}) {
     },
     admin: async ({ db: _db }, use) => {
       const usr = b.adminUser ?? 'Administrator'
-      await use(makeClient(b.app, await b.mintToken(usr), usr))
+      await use(makeClient(b.app, await required(b, 'mintToken', 'admin')(usr), usr))
     },
     createUser: async ({ db: _db }, use) => {
       await use(async (o = {}) => {
         const email = o.email ?? `user-${++userCounter}@feather.test`
-        const rowId = await b.insertUser({
+        const rowId = await required(b, 'insertUser', 'createUser')({
           email,
           fullName: o.fullName,
           roles: o.roles ?? opts.defaultRoles ?? [],
         })
-        return makeClient(b.app, await b.mintToken(rowId), rowId)
+        return makeClient(b.app, await required(b, 'mintToken', 'createUser')(rowId), rowId)
       })
     },
     client: async ({ createUser }, use) => {
       await use(await createUser())
     },
-    seed: async ({ admin }, use) => {
-      await use(async (table, values = {}) => {
-        return (await admin.post('/api/save_row', { table, row: values })) as Record<
-          string,
-          unknown
-        > & { row_id: string }
-      })
+    // \`admin\` is built only when the seed strategy asks for it, so harnesses
+    // without auth can still seed.
+    seed: async ({ db, api }, use) => {
+      const usr = b.adminUser ?? 'Administrator'
+      let adminClient: TestClient | undefined
+      const admin = async () =>
+        (adminClient ??= makeClient(b.app, await required(b, 'mintToken', 'admin')(usr), usr))
+      const strategy = b.seed ?? saveRowSeed
+      await use((table, values = {}) => strategy(table, values, { db, api, admin }))
     },
   })
 }

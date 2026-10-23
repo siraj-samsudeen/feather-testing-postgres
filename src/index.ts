@@ -10,6 +10,8 @@ export {
   type TestClient,
   type SeedFn,
   type CreateUserFn,
+  type SeedCallback,
+  saveRowSeed,
 } from './server'
 export {
   createFeatherDb,

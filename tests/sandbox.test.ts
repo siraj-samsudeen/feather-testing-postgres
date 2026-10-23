@@ -183,3 +183,28 @@ describe('createPgTest fixtures', () => {
     expect(row).toBeUndefined()
   })
 })
+
+// Seeding and auth are the consumer's: a harness can bring its own seed() and
+// leave out mintToken/insertUser when it has no users.
+const seededDirectly: Array<{ table: string; values: Record<string, unknown> }> = []
+const bareTest = createPgTest({
+  app,
+  sql,
+  setDelegate,
+  seed: async (table, values, { db }) => {
+    seededDirectly.push({ table, values })
+    const tx = db as unknown as typeof root
+    const [row] = await tx`insert into harness_row (title) values (${String(values.title)}) returning row_id`
+    return { row_id: String(row.row_id) }
+  },
+})
+
+describe('consumer-supplied seed and auth callbacks', () => {
+  bareTest('seed() uses the supplied callback instead of POST /api/save_row', async ({ seed, api }) => {
+    const row = await seed('Harness Row', { title: 'via callback' })
+    expect(row.row_id).toBeTruthy()
+    expect(seededDirectly.at(-1)).toEqual({ table: 'Harness Row', values: { title: 'via callback' } })
+    const { rows } = await api.get<{ rows: { title: string }[] }>('/api/rows')
+    expect(rows.map((r) => r.title)).toEqual(['via callback'])
+  })
+})
