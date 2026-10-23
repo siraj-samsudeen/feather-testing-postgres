@@ -205,6 +205,15 @@ class Scheduler {
    * endTest waits for them like app transactions. */
   readonly rawOpen = new Set<Promise<unknown>>()
 
+  /** Raw cursors opened and not yet finished: closed when the test ends (an
+   * abandoned one holds the connection, and the rollback would queue behind it). */
+  readonly cursors = new Set<() => Promise<unknown>>()
+
+  trackCursor(close: () => Promise<unknown>): () => void {
+    this.cursors.add(close)
+    return () => this.cursors.delete(close)
+  }
+
   track(work: Promise<unknown>): void {
     const settled = work.then(
       () => {},
@@ -250,9 +259,16 @@ async function endHeld(
   retire?: () => { closed: Promise<void> },
 ): Promise<void> {
   sched.ended = true
+  // close raw cursors still open (abandoned mid-way, they hold the connection)
+  const closingCursors = [...sched.cursors].map((close) =>
+    Promise.resolve()
+      .then(close)
+      .catch(() => {}),
+  )
+  sched.cursors.clear()
   let timer: ReturnType<typeof setTimeout> | undefined
   const settled = await Promise.race([
-    Promise.all([sched.root.tail, ...sched.rawOpen]).then(() => true),
+    Promise.all([sched.root.tail, ...sched.rawOpen, ...closingCursors]).then(() => true),
     new Promise<boolean>((r) => {
       timer = setTimeout(() => r(false), graceMs)
     }),
@@ -309,6 +325,8 @@ interface RawGate {
   check(): void
   readonly closed: boolean
   track(work: Promise<unknown>): void
+  /** Registers an open cursor's closer for teardown; returns the unregister. */
+  trackCursor?(close: () => Promise<unknown>): () => void
 }
 
 const plainRows = (rows: Iterable<unknown>): Row[] => Array.from(rows, (r) => ({ ...(r as Row) }))
@@ -398,15 +416,27 @@ function rawFacade(port: RawPort, gate: RawGate, inTransaction: boolean, names =
       Object.freeze({
         [Symbol.asyncIterator]() {
           let it: AsyncIterator<Row[]> | undefined
+          let untrack: (() => void) | undefined
+          const finish = async () => {
+            untrack?.()
+            await it?.return?.()
+          }
           return Object.freeze({
             async next(): Promise<IteratorResult<Row[]>> {
               gate.check()
-              it ??= open(text, params, batchSize)[Symbol.asyncIterator]()
+              if (!it) {
+                it = open(text, params, batchSize)[Symbol.asyncIterator]()
+                // an abandoned cursor holds the connection: endTest closes it
+                untrack = gate.trackCursor?.(async () => {
+                  await it?.return?.()
+                })
+              }
               const r = await it.next()
+              if (r.done) untrack?.()
               return r.done ? { done: true, value: undefined } : { done: false, value: plainRows(r.value) }
             },
             async return(): Promise<IteratorResult<Row[]>> {
-              await it?.return?.()
+              await finish()
               return { done: true, value: undefined }
             },
           })

@@ -66,6 +66,30 @@ export function rawFacadeContract({ describe, test, expect }: RunnerApi) {
         }
       }, 30_000)
 
+      if (v.driver === 'postgres-js')
+        test(`an abandoned cursor does not hang endTest; the next test is isolated (${v.label})`, async () => {
+          const grace = 500
+          const fdb = engine(v, { endTestGraceMs: grace })
+          try {
+            const t = await fdb.beginTest()
+            const raw = t.raw as RawSql
+            await raw`insert into todos (title) values ('this test only')`
+            const it = raw.cursor!('select generate_series(1, 10) as g', [], 1)[Symbol.asyncIterator]()
+            expect((await it.next()).value).toEqual([{ g: 1 }]) // one batch read, then abandoned
+            const started = performance.now()
+            await fdb.endTest()
+            expect(performance.now() - started).toBeLessThan(grace + 1000)
+
+            const next = await fdb.beginTest()
+            await next.raw`insert into todos (title) values ('next test')`
+            const titles = (await next.raw<{ title: string }>`select title from todos`).map((r) => r.title)
+            expect(titles).toEqual(['next test'])
+            await fdb.endTest()
+          } finally {
+            await fdb.close()
+          }
+        }, 10_000)
+
       test(`no driver object is reachable from a facade by reflection (${v.label})`, async () => {
         const fdb = engine(v)
         try {
