@@ -140,7 +140,7 @@ const STALE_AFTER_MS = 3600_000
 
 async function sweep(sql: SqlRunner, opts: { anyHost: boolean; olderThan: number }): Promise<string[]> {
   const rows = await sql<{ datname: string }>`
-    select datname from pg_database where datname ~ '^feather_(tpl|t)_[0-9a-f]{8}_[0-9]+_'`
+    select datname from pg_catalog.pg_database where datname ~ '^feather_(tpl|t)_[0-9a-f]{8}_[0-9]+_'`
   const dropped: string[] = []
   for (const { datname } of rows) {
     const m = NAME.exec(datname)
@@ -242,7 +242,8 @@ export async function assertTestDatabase(
   sql: SqlRunner,
   options: { allowAnyDatabase?: boolean; expected?: string } = {},
 ): Promise<void> {
-  const [{ db }] = await sql<{ db: string }>`select current_database() as db`
+  // schema-qualified: a current_database() earlier on search_path can't answer
+  const [{ db }] = await sql<{ db: string }>`select pg_catalog.current_database() as db`
   if (options.expected !== undefined) {
     if (db !== options.expected)
       throw new Error(`feather-testing-postgres: connected to database "${db}", expected "${options.expected}"`)

@@ -37,3 +37,5 @@ import { slowQueryContract } from '../contract/slow-query.contract'
 slowQueryContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { currentDatabaseContract } from '../contract/current-database.contract'
 currentDatabaseContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { searchPathContract } from '../contract/search-path.contract'
+searchPathContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
