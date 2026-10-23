@@ -39,3 +39,5 @@ import { currentDatabaseContract } from '../contract/current-database.contract'
 currentDatabaseContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { searchPathContract } from '../contract/search-path.contract'
 searchPathContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { effectiveDatabaseContract } from '../contract/effective-database.contract'
+effectiveDatabaseContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

@@ -194,24 +194,28 @@ export function savepointingPgliteTx(tx: any, sched: Scheduler): unknown {
  * this source (it ships as .ts). */
 export const optionalPeer = (name: string): Promise<any> => import(/* @vite-ignore */ name)
 
-/** The database a URL means, resolved the way libpq does — the path, else
- * PGDATABASE, else the user — and handed to the driver explicitly, so every
- * driver connects to the same one (Bun.sql would otherwise let PGDATABASE
- * override the path, and reads it once per process). */
-function databaseOf(url: string): string {
+/** The database a URL means — the one the driver itself would pick — handed
+ * to it explicitly, so it can't be redirected (Bun.sql otherwise lets
+ * PGDATABASE override the path, and reads it once per process). The path,
+ * else PGDATABASE, else the effective user, in each driver's own order:
+ * postgres.js — URL user, PGUSERNAME, PGUSER, the OS account;
+ * Bun.sql — URL user, PGUSER, USER, the OS account (PGUSERNAME ignored). */
+export function databaseOf(
+  url: string,
+  driver: PostgresDriver,
+  env: Record<string, string | undefined> = process.env,
+): string {
   const u = new URL(url)
-  return (
-    decodeURIComponent(u.pathname.replace(/^\//, '')) ||
-    process.env.PGDATABASE ||
+  const user =
     decodeURIComponent(u.username) ||
-    process.env.PGUSER ||
+    (driver === 'postgres-js' ? env.PGUSERNAME || env.PGUSER : env.PGUSER || env.USER) ||
     userInfo().username
-  )
+  return decodeURIComponent(u.pathname.replace(/^\//, '')) || env.PGDATABASE || user
 }
 
 export async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Promise<Conn> {
   let make: () => any
-  const database = databaseOf(url)
+  const database = databaseOf(url, driver)
   if (driver === 'bun') {
     const Bun = (globalThis as any).Bun
     if (!Bun?.SQL) throw new Error("feather-testing-postgres: driver 'bun' needs the Bun runtime; use driver 'postgres-js' under Node")
