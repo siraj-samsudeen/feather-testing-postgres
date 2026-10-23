@@ -1,7 +1,7 @@
 {
   "name": "feather-testing-postgres",
   "version": "0.2.0",
-  "description": "Phoenix-style SQL Sandbox testing for React + Postgres stacks: per-test transaction rollback, in-process server fixtures, and full-stack component tests.",
+  "description": "Phoenix-style SQL Sandbox testing for Postgres stacks: per-test transaction rollback or per-test database clones, on PGlite or a real Postgres (Bun.sql / postgres.js), under bun test or Vitest, with in-process server fixtures and full-stack component tests.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,15 +16,28 @@
     "sql-sandbox",
     "phoenix",
     "ecto",
-    "hono"
+    "hono",
+    "bun",
+    "pglite",
+    "drizzle",
+    "elysia"
   ],
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {
-    ".": "./src/index.ts",
+    ".": {
+      "bun": "./src/index.bun.ts",
+      "default": "./src/index.ts"
+    },
+    "./engine": "./src/engine.ts",
+    "./fixtures": "./src/fixtures.ts",
+    "./bun": "./src/bun.ts",
+    "./vitest": "./src/vitest.ts",
+    "./drizzle": "./src/drizzle.ts",
     "./react": "./src/react.tsx",
-    "./session": "./src/session.ts"
+    "./session": "./src/session.ts",
+    "./happy-dom": "./src/happy-dom.ts"
   },
   "files": [
     "src",
@@ -34,22 +47,35 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "test:vitest:pglite": "FEATHER_DB=pglite vitest run",
+    "test:vitest:postgres": "FEATHER_DB=postgres vitest run",
+    "test:bun:pglite": "FEATHER_DB=pglite bun test --preload ./src/happy-dom.ts ./tests/bun ./tests/react.test.tsx ./tests/session.test.tsx",
+    "test:bun:postgres": "FEATHER_DB=postgres bun test --preload ./src/happy-dom.ts ./tests/bun ./tests/react.test.tsx ./tests/session.test.tsx",
+    "test:lanes": "npm run test:vitest:pglite && npm run test:bun:pglite && npm run test:vitest:postgres && npm run test:bun:postgres",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "feather-testing-core": "^0.4.0"
-  },
   "peerDependencies": {
+    "@electric-sql/pglite": ">=0.3",
+    "@happy-dom/global-registrator": ">=15",
     "@tanstack/react-query": ">=5",
     "@tanstack/react-router": ">=1",
     "@testing-library/dom": ">=10",
     "@testing-library/react": ">=16",
     "@testing-library/user-event": ">=14",
+    "drizzle-orm": ">=0.44 <1",
+    "feather-testing-core": ">=0.4.0 <0.8",
+    "postgres": ">=3",
     "react": ">=18",
     "react-dom": ">=18",
     "vitest": ">=2"
   },
   "peerDependenciesMeta": {
+    "@electric-sql/pglite": {
+      "optional": true
+    },
+    "@happy-dom/global-registrator": {
+      "optional": true
+    },
     "@tanstack/react-query": {
       "optional": true
     },
@@ -65,23 +91,43 @@
     "@testing-library/user-event": {
       "optional": true
     },
+    "drizzle-orm": {
+      "optional": true
+    },
+    "feather-testing-core": {
+      "optional": true
+    },
+    "postgres": {
+      "optional": true
+    },
     "react": {
       "optional": true
     },
     "react-dom": {
       "optional": true
+    },
+    "vitest": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.11",
+    "@happy-dom/global-registrator": "^21.0.4",
     "@tanstack/react-query": "^5.102.8",
     "@tanstack/react-router": "^1.170.32",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.6",
+    "@types/bun": "^1.4.4",
     "@types/node": "^26.4.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
+    "drizzle-kit": "^0.31.11",
+    "drizzle-orm": "~0.45.4",
+    "elysia": "^1.4.30",
+    "feather-testing-core": "^0.4.0",
+    "feather-testing-core-next": "file:./tests/vendor/feather-testing-core-0.7.0-beta.1.tgz",
     "jsdom": "^28.1.0",
     "postgres": "^3.4.9",
     "react": "^19.2.8",

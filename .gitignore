@@ -4,3 +4,4 @@ dist/
 
 # Generated locally; this package publishes source and pins nothing.
 package-lock.json
+bun.lock

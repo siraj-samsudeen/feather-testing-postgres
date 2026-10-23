@@ -126,3 +126,72 @@ export async function rendersTheApp(as: TestClient) {
     if (e instanceof StepError) void e.message
   }
 }
+
+// --- 0.3 surface: engines, fixtures, runner helpers, factories -------------
+import {
+  createFeatherDb,
+  createDbTest,
+  postgresFixtures,
+  saveRowSeed,
+  useFixtures,
+  type FeatherDb,
+  type FixtureDef,
+  type SeedCallback,
+  type SqlRunner,
+  type TestDb,
+} from '../../src/index'
+import { factory, seq, type FeatherDrizzleDb } from '../../src/drizzle'
+
+const fdb: FeatherDb = createFeatherDb({ engine: 'pglite', strategy: 'clone', migrations: './drizzle' })
+async function engineSurface() {
+  await fdb.start()
+  const t: TestDb = await fdb.beginTest()
+  const rows: { n: number }[] = await (t.sql as SqlRunner)<{ n: number }>`select 1 as n`
+  void rows
+  await fdb.endTest()
+  await fdb.close()
+}
+void engineSurface
+const defs = postgresFixtures(fdb)
+const scope = defs.dbEngine[1].scope
+void scope
+const appDef: FixtureDef<{ db: FeatherDrizzleDb }, { db: FeatherDrizzleDb }> = [
+  async ({ db }, use) => use({ db }),
+  { deps: ['db'] },
+]
+void appDef
+void useFixtures
+void createDbTest
+const ownSeed: SeedCallback = async (_table, _values, { admin }) => {
+  await admin()
+  return { row_id: 'x' }
+}
+const seeded: PgTestBindings = { ...bindings, seed: ownSeed ?? saveRowSeed }
+void seeded
+void factory
+void seq
+
+// --- t.db typed from the schema --------------------------------------------
+import * as schema from '../fixtures/schema'
+import { sandboxEach } from '../../src/bun'
+import { createDbTest as createTypedDbTest } from '../../src/vitest'
+
+type AppDb = FeatherDrizzleDb<typeof schema>
+async function typedDbSurface() {
+  const typed = createFeatherDb<AppDb>({ schema })
+  const t = await typed.beginTest()
+  const users: { id: number; email: string; name: string }[] = await t.db.query.users.findMany()
+  void users
+  // @ts-expect-error — not any: an unknown table is a type error
+  await t.db.query.nope.findMany()
+  const each = sandboxEach<AppDb>({ schema })
+  const titles: string[] = (await each.db.select().from(schema.todos)).map((r) => r.title)
+  void titles
+  const vt = createTypedDbTest<AppDb>({ schema })
+  vt('typed', async ({ db }) => {
+    // @ts-expect-error — the row type is known
+    const wrong: number = (await db.select().from(schema.users))[0].email
+    void wrong
+  })
+}
+void typedDbSurface

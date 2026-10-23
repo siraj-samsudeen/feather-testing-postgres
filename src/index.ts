@@ -1,13 +1,5 @@
-export { withSandbox, type SandboxHooks, type SqlLike } from './sandbox'
-export {
-  createPgTest,
-  makeClient,
-  TestApiError,
-  type AppLike,
-  type PgTestBindings,
-  type PgTestFixtures,
-  type PgTestOptions,
-  type TestClient,
-  type SeedFn,
-  type CreateUserFn,
-} from './server'
+// The root entry: the runner-free API plus the Vitest helpers (test.extend).
+// Under Bun the "bun" export condition resolves to index.bun.ts instead.
+export * from './core'
+export { createPgTest } from './server'
+export { createDbTest } from './vitest'

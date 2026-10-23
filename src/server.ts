@@ -4,121 +4,34 @@
 // HTTP server, no mocks, real Postgres.
 
 import { test as base } from 'vitest'
-import { withSandbox, type SandboxHooks } from './sandbox'
+import { withSandbox } from './sandbox'
+import { makeClient, saveRowSeed, type PgTestBindings, type PgTestFixtures, type PgTestOptions, type TestClient } from './client'
 
-export interface AppLike {
-  /** Hono's `app.request` may answer synchronously, so accept either shape —
-   * every caller here awaits the result. */
-  request(input: string, init?: RequestInit): Response | Promise<Response>
+export {
+  makeClient,
+  saveRowSeed,
+  TestApiError,
+  type AppLike,
+  type CreateUserFn,
+  type PgTestBindings,
+  type PgTestFixtures,
+  type PgTestOptions,
+  type SeedCallback,
+  type SeedFn,
+  type TestClient,
+} from './client'
+
+function required<K extends 'mintToken' | 'insertUser'>(
+  b: PgTestBindings,
+  key: K,
+  fixture: string,
+): NonNullable<PgTestBindings[K]> {
+  const fn = b[key]
+  if (!fn)
+    throw new Error(`feather-testing-postgres: the '${fixture}' fixture needs \`${key}\` in createPgTest's bindings`)
+  // bound: method-style bindings (`mintToken(u) { return this.issueSession(u) }`) keep `this`
+  return (fn as Function).bind(b) as NonNullable<PgTestBindings[K]>
 }
-
-export interface PgTestBindings extends SandboxHooks {
-  app: AppLike
-  /** Mint a session token for an existing enabled user (no password needed —
-   * bind to the server's issueSession). */
-  mintToken(user: string): Promise<string>
-  /** Create a user through the real save lifecycle; returns its `row_id`.
-   * Called inside the sandbox, so it rolls back with the test. */
-  insertUser(opts: { email: string; fullName?: string; roles: string[] }): Promise<string>
-  /** The administrator account name. Default: 'Administrator'. */
-  adminUser?: string
-}
-
-export class TestApiError extends Error {
-  status: number
-  type: string
-  fields?: Record<string, string>
-  constructor(status: number, type: string, message: string, fields?: Record<string, string>) {
-    super(`${status} ${type}: ${message}`)
-    this.status = status
-    this.type = type
-    this.fields = fields
-  }
-}
-
-export interface TestClient {
-  /** The `row_id` of the user this client is authenticated as (null =
-   * anonymous). */
-  user: string | null
-  token: string | null
-  fetch(path: string, init?: RequestInit): Promise<Response>
-  get<T = Record<string, unknown>>(path: string): Promise<T>
-  post<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T>
-  put<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T>
-  delete<T = Record<string, unknown>>(path: string): Promise<T>
-}
-
-export function makeClient(app: AppLike, token: string | null, user: string | null): TestClient {
-  async function doFetch(path: string, init: RequestInit = {}): Promise<Response> {
-    // FormData bodies must keep their runtime-generated multipart boundary —
-    // never force a JSON content-type onto them.
-    const isForm = typeof FormData !== 'undefined' && init.body instanceof FormData
-    return await app.request(path, {
-      ...init,
-      headers: {
-        ...(isForm ? {} : { 'content-type': 'application/json' }),
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-        ...((init.headers as Record<string, string>) ?? {}),
-      },
-    })
-  }
-  async function doJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const res = await doFetch(path, init)
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: { type: string; message: string; fields?: Record<string, string> }
-    }
-    if (!res.ok)
-      throw new TestApiError(
-        res.status,
-        body.error?.type ?? 'InternalError',
-        body.error?.message ?? `request failed (${res.status})`,
-        body.error?.fields,
-      )
-    return body as T
-  }
-  return {
-    user,
-    token,
-    fetch: doFetch,
-    get: (path) => doJson(path),
-    post: (path, body) => doJson(path, { method: 'POST', body: JSON.stringify(body ?? {}) }),
-    put: (path, body) => doJson(path, { method: 'PUT', body: JSON.stringify(body ?? {}) }),
-    delete: (path) => doJson(path, { method: 'DELETE' }),
-  }
-}
-
-export type SeedFn = (
-  table: string,
-  values?: Record<string, unknown>,
-) => Promise<Record<string, unknown> & { row_id: string }>
-
-export type CreateUserFn = (opts?: {
-  email?: string
-  fullName?: string
-  roles?: string[]
-}) => Promise<TestClient>
-
-export interface PgTestFixtures {
-  /** The sandbox transaction handle — raw SQL access inside the test tx. */
-  db: unknown
-  /** Anonymous in-process client. */
-  api: TestClient
-  /** Administrator-authenticated client. */
-  admin: TestClient
-  /** A fresh regular user (created inside the sandbox) with the harness's
-   * default roles. */
-  client: TestClient
-  /** Insert a row through the real save lifecycle as Administrator. */
-  seed: SeedFn
-  /** Create an additional user; returns an authenticated client. */
-  createUser: CreateUserFn
-}
-
-export interface PgTestOptions {
-  /** Roles granted to `client` / `createUser()` users by default. */
-  defaultRoles?: string[]
-}
-
 let userCounter = 0
 
 export function createPgTest(b: PgTestBindings, opts: PgTestOptions = {}) {
@@ -139,29 +52,31 @@ export function createPgTest(b: PgTestBindings, opts: PgTestOptions = {}) {
     },
     admin: async ({ db: _db }, use) => {
       const usr = b.adminUser ?? 'Administrator'
-      await use(makeClient(b.app, await b.mintToken(usr), usr))
+      await use(makeClient(b.app, await required(b, 'mintToken', 'admin')(usr), usr))
     },
     createUser: async ({ db: _db }, use) => {
       await use(async (o = {}) => {
         const email = o.email ?? `user-${++userCounter}@feather.test`
-        const rowId = await b.insertUser({
+        const rowId = await required(b, 'insertUser', 'createUser')({
           email,
           fullName: o.fullName,
           roles: o.roles ?? opts.defaultRoles ?? [],
         })
-        return makeClient(b.app, await b.mintToken(rowId), rowId)
+        return makeClient(b.app, await required(b, 'mintToken', 'createUser')(rowId), rowId)
       })
     },
     client: async ({ createUser }, use) => {
       await use(await createUser())
     },
-    seed: async ({ admin }, use) => {
-      await use(async (table, values = {}) => {
-        return (await admin.post('/api/save_row', { table, row: values })) as Record<
-          string,
-          unknown
-        > & { row_id: string }
-      })
+    // \`admin\` is built only when the seed strategy asks for it, so harnesses
+    // without auth can still seed.
+    seed: async ({ db, api }, use) => {
+      const usr = b.adminUser ?? 'Administrator'
+      let adminClient: TestClient | undefined
+      const admin = async () =>
+        (adminClient ??= makeClient(b.app, await required(b, 'mintToken', 'admin')(usr), usr))
+      const strategy = b.seed ? b.seed.bind(b) : saveRowSeed
+      await use((table, values = {}) => strategy(table, values, { db, api, admin }))
     },
   })
 }
