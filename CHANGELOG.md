@@ -36,6 +36,11 @@ Additive — every 0.2 export keeps its meaning.
   runner-free entry with no vitest import; `createPgTest`/`createDbTest` there
   throw a pointer to `feather-testing-postgres/bun`. Vitest consumers keep the
   default entry, unchanged.
+- Fixture pairs follow feather-testing-core's rule: `[fn, {}]` is a fixture
+  function with no options; for non-function values a two-element array is
+  `[value, options]` only when the second element is a plain object with
+  known option keys (`scope`, `deps`, `value`) — otherwise the array is the
+  value (`[{ id: 1 }, { id: 2 }]`, `[1, {}]`).
 - **Fixtures**: `postgresFixtures()` (definitions in feather-testing-core's
   Playwright-style shape, `[async (deps, use) => …, { scope, deps }]`),
   `useFixtures()`; bun:test helpers `sandboxEach()` /

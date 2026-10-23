@@ -123,17 +123,21 @@ export interface LifecycleHooks {
 }
 
 // (readonly too, so `[fn, { value: true }] as const` keeps its types)
-/** An options object: at least one key, and only known option keys. */
-type IsOptions<O> = O extends FixtureOptions
-  ? [keyof O] extends [never]
-    ? false
-    : [Exclude<keyof O, keyof FixtureOptions>] extends [never]
-      ? true
-      : false
+/** An options object: only known option keys — and at least one, unless
+ * the first element is a function ([fn, {}] is a fixture function with no
+ * options, as in feather-testing-core; [1, {}] is a value). */
+type IsOptions<X, O> = O extends FixtureOptions
+  ? [Exclude<keyof O, keyof FixtureOptions>] extends [never]
+    ? [keyof O] extends [never]
+      ? X extends (...args: any[]) => any
+        ? true
+        : false
+      : true
+    : false
   : false
 
 type ValueOf<D> = D extends readonly [infer X, infer O]
-  ? IsOptions<O> extends false
+  ? IsOptions<X, O> extends false
     ? D // a two-element array value, not [fixture, options]
     : O extends { value: true }
     ? X // marked a value: the function itself, even if it looks like a fixture
@@ -164,20 +168,23 @@ interface Normal {
 
 const OPTION_KEYS = new Set(['scope', 'deps', 'value'])
 
-/** [fixture, options] only when the second element is a plain object with at
- * least one key, all of them option keys — otherwise a two-element array (rows,
- * a pair of values) is itself the fixture's value. */
-function isOptions(x: unknown): x is FixtureOptions {
+/** [fixture, options] only when the second element is a plain object whose
+ * keys are all option keys — and at least one, unless the first element is a
+ * function ([fn, {}] is a fixture function with no options, as in
+ * feather-testing-core). Otherwise a two-element array (rows, a pair of
+ * values) is itself the fixture's value. */
+function isOptions(x: unknown, first: unknown): x is FixtureOptions {
   if (!x || typeof x !== 'object' || Array.isArray(x)) return false
   const proto = Object.getPrototypeOf(x)
   if (proto !== Object.prototype && proto !== null) return false
   const keys = Object.keys(x)
-  return keys.length > 0 && keys.every((k) => OPTION_KEYS.has(k))
+  if (!keys.every((k) => OPTION_KEYS.has(k))) return false
+  return keys.length > 0 || typeof first === 'function'
 }
 
 function normalise(def: unknown): Normal {
   const [v, o] =
-    Array.isArray(def) && def.length === 2 && isOptions(def[1])
+    Array.isArray(def) && def.length === 2 && isOptions(def[1], def[0])
       ? (def as [unknown, FixtureOptions])
       : [def, {} as FixtureOptions]
   const isFn = typeof v === 'function' && !o.value

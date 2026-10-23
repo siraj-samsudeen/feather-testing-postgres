@@ -159,3 +159,26 @@ describe('useFixtures(): a failed start surfaces the real error', () => {
     await run(registered.afterAll[0])
   })
 })
+
+describe('useFixtures(): [fn, {}] is a fixture function with no options (as in core)', () => {
+  const t = useBunFixtures({
+    greeting: [
+      async ({}, use: (v: string) => Promise<void>) => {
+        await use('hi')
+      },
+      {},
+    ] as const,
+    pair: [1, {}] as const, // not a function: still the value
+  })
+  test('the function runs as a fixture; a non-function pair stays a value', () => {
+    expect(t.greeting).toBe('hi')
+    expect(t.pair).toEqual([1, {}])
+  })
+})
+
+// types follow (type-checked only, never run)
+const fnWithEmptyOptions = (t: FixtureValues<{ g: readonly [(d: {}, use: (v: string) => Promise<void>) => Promise<void>, {}] }>) => {
+  const g: string = t.g
+  void g
+}
+void fnWithEmptyOptions
