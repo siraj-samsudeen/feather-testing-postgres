@@ -143,6 +143,65 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
       expect(await titles()).toEqual(['outer', 'via db'])
     })
 
+    // Siblings deeper down: inside one transaction, two concurrent child
+    // transactions (via tx, or via the outer db) must not interleave either.
+    const commitAndRollback = (open: (fn: (tx: any) => Promise<void>) => Promise<void>, prefix: string) =>
+      Promise.allSettled([
+        open(async (tx) => {
+          await tx.insert(todos).values({ title: `${prefix} rolled back` })
+          await tick()
+          await tick()
+          throw new Error('sibling fails')
+        }),
+        open(async (tx) => {
+          await tick()
+          await tx.insert(todos).values({ title: `${prefix} committed` })
+        }),
+      ]).then((r) => expect(r.map((x) => x.status)).toEqual(['rejected', 'fulfilled']))
+
+    test('depth 1: concurrent tx.transaction() siblings — commit survives a sibling rollback', async () => {
+      await t.db.transaction(async (tx: any) => {
+        await commitAndRollback((fn) => tx.transaction(fn), 'tx')
+      })
+      expect(await titles()).toEqual(['tx committed'])
+    })
+
+    test('depth 1: concurrent outer db.transaction() calls inside a transaction', async () => {
+      await t.db.transaction(async () => {
+        await commitAndRollback((fn) => t.db.transaction(fn), 'db')
+      })
+      expect(await titles()).toEqual(['db committed'])
+    })
+
+    test('depth 2: concurrent siblings two levels down', async () => {
+      await t.db.transaction(async (tx: any) => {
+        await tx.transaction(async (tx2: any) => {
+          await tx2.insert(todos).values({ title: 'level 2' })
+          await commitAndRollback((fn) => tx2.transaction(fn), 'deep')
+        })
+      })
+      expect(await titles()).toEqual(['level 2', 'deep committed'])
+    })
+
+    test('nesting runs immediately inside a queued sibling (no deadlock)', async () => {
+      const order: string[] = []
+      await Promise.all(
+        ['a', 'b'].map((p) =>
+          t.db.transaction(async (tx: any) => {
+            order.push(`${p} start`)
+            await tx.transaction(async (tx2: any) => {
+              await tx2.transaction(async (tx3: any) => {
+                await tx3.insert(todos).values({ title: `${p} deep` })
+              })
+            })
+            order.push(`${p} end`)
+          }),
+        ),
+      )
+      expect(order).toEqual(['a start', 'a end', 'b start', 'b end'])
+      expect((await titles()).sort()).toEqual(['a deep', 'b deep'])
+    })
+
     test('refuses a second open test (sequential tests only)', async () => {
       await expect(fdb.beginTest()).rejects.toThrow(/sequentially/)
     })
