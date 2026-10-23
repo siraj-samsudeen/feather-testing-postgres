@@ -119,7 +119,8 @@ function required<K extends 'mintToken' | 'insertUser'>(
   const fn = b[key]
   if (!fn)
     throw new Error(`feather-testing-postgres: the '${fixture}' fixture needs \`${key}\` in createPgTest's bindings`)
-  return fn as NonNullable<PgTestBindings[K]>
+  // bound: method-style bindings (`mintToken(u) { return this.issueSession(u) }`) keep `this`
+  return (fn as Function).bind(b) as NonNullable<PgTestBindings[K]>
 }
 
 export type CreateUserFn = (opts?: {
@@ -192,7 +193,7 @@ export function createPgTest(b: PgTestBindings, opts: PgTestOptions = {}) {
       let adminClient: TestClient | undefined
       const admin = async () =>
         (adminClient ??= makeClient(b.app, await required(b, 'mintToken', 'admin')(usr), usr))
-      const strategy = b.seed ?? saveRowSeed
+      const strategy = b.seed ? b.seed.bind(b) : saveRowSeed
       await use((table, values = {}) => strategy(table, values, { db, api, admin }))
     },
   })
