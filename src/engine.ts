@@ -265,10 +265,16 @@ const DEFAULT_END_TEST_GRACE_MS = 2000
 /** A query object guarded at execution as well as creation. Bun.sql and
  * postgres.js queries are lazy: built before endTest and awaited (or
  * .execute()d, .values()d, ...) after it, they would run on the bare
- * connection. Every method — whatever starts the query — checks first;
- * methods returning the query itself keep it guarded. */
-function guardQuery<T>(q: T, sched: Scheduler): T {
+ * connection. Every method — whatever starts the query — checks first, and
+ * whatever a method hands back that could start it later is guarded too: the
+ * query itself, a cursor, an async iterator (next/return/throw), a forEach
+ * query. Plain promises and data pass through (they carry results, not work). */
+function guardQuery<T>(q: T, sched: Scheduler, seen = new WeakMap<object, unknown>()): T {
   if (!q || (typeof q !== 'object' && typeof q !== 'function')) return q
+  if (Object.getPrototypeOf(q) === Promise.prototype) return q
+  if (Array.isArray(q)) return q
+  const known = seen.get(q as object)
+  if (known) return known as T
   const proxy: any = new Proxy(q as any, {
     get(target, prop) {
       const v = target[prop]
@@ -276,10 +282,11 @@ function guardQuery<T>(q: T, sched: Scheduler): T {
       return (...args: unknown[]) => {
         sched.check()
         const r = v.apply(target, args)
-        return r === target ? proxy : r
+        return r === target ? proxy : guardQuery(r, sched, seen)
       }
     },
   })
+  seen.set(q as object, proxy)
   return proxy
 }
 

@@ -18,3 +18,5 @@ import { migrateOnceContract } from '../contract/migrate-once.contract'
 migrateOnceContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { graceTimeoutContract } from '../contract/grace-timeout.contract'
 graceTimeoutContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { rawCursorContract } from '../contract/raw-cursor.contract'
+rawCursorContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
