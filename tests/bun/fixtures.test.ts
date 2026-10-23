@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'bun:test'
 import { count } from 'drizzle-orm'
 import { postgresFixtures, type FeatherDb, type TestDb } from '../../src/fixtures'
-import { sandboxEach, useBunFixtures } from '../../src/bun'
+import { sandboxEach, useBunFixtures, type FixtureValues } from '../../src/bun'
 import { users } from '../fixtures/schema'
 import { MIGRATIONS } from '../contract/runner'
 
@@ -84,3 +84,48 @@ describe('useFixtures(): a { value: true } function keeps its type', () => {
     expect(sent).toEqual(['email'])
   })
 })
+
+describe('useFixtures(): a two-element array value is a value, not [fixture, options]', () => {
+  const setups: string[] = []
+  const t = useBunFixtures({
+    rows: [{ id: 1 }, { id: 2 }],
+    pair: [1, {}],
+    unknownKey: ['x', { scope: 'file', colour: 'red' }],
+    // still a real pair: options with known keys only
+    perFile: [
+      async ({}, use: (v: string) => Promise<void>) => {
+        setups.push('perFile')
+        await use('shared')
+      },
+      { scope: 'file' },
+    ] as const,
+    plainPair: [{ id: 3 }, { scope: 'file' }] as const,
+  })
+  test('arrays come through whole', () => {
+    expect(t.rows).toEqual([{ id: 1 }, { id: 2 }])
+    expect(t.pair).toEqual([1, {}])
+    expect(t.unknownKey).toEqual(['x', { scope: 'file', colour: 'red' }])
+  })
+  test('[fn, { scope }] and [value, { scope }] are still pairs', () => {
+    expect(t.perFile).toBe('shared')
+    expect(t.plainPair).toEqual({ id: 3 })
+    expect(setups).toEqual(['perFile']) // file scope: set up once
+  })
+})
+
+// types follow the same rule (type-checked only, never run)
+const typesFollowTheSameRule = (t: FixtureValues<{
+  pair: readonly [1, {}]
+  odd: readonly ['x', { readonly colour: 'red' }]
+  real: readonly [{ readonly id: 3 }, { readonly scope: 'file' }]
+}>) => {
+  const typed = t
+  type Check = [typeof t.pair, typeof t.odd, typeof t.real]
+  const ok: Check = [[1, {}], ['x', { colour: 'red' }], { id: 3 }]
+  // @ts-expect-error — [1, {}] is the value, not 1
+  const wrong: number = t.pair
+  void ok
+  void wrong
+  void typed
+}
+void typesFollowTheSameRule

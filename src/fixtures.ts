@@ -123,8 +123,19 @@ export interface LifecycleHooks {
 }
 
 // (readonly too, so `[fn, { value: true }] as const` keeps its types)
-type ValueOf<D> = D extends readonly [infer X, infer O extends FixtureOptions]
-  ? O extends { value: true }
+/** An options object: at least one key, and only known option keys. */
+type IsOptions<O> = O extends FixtureOptions
+  ? [keyof O] extends [never]
+    ? false
+    : [Exclude<keyof O, keyof FixtureOptions>] extends [never]
+      ? true
+      : false
+  : false
+
+type ValueOf<D> = D extends readonly [infer X, infer O]
+  ? IsOptions<O> extends false
+    ? D // a two-element array value, not [fixture, options]
+    : O extends { value: true }
     ? X // marked a value: the function itself, even if it looks like a fixture
     : X extends FixtureFn<infer T, any>
       ? T
@@ -151,10 +162,24 @@ interface Normal {
   deps: string[]
 }
 
+const OPTION_KEYS = new Set(['scope', 'deps', 'value'])
+
+/** [fixture, options] only when the second element is a plain object with at
+ * least one key, all of them option keys — otherwise a two-element array (rows,
+ * a pair of values) is itself the fixture's value. */
+function isOptions(x: unknown): x is FixtureOptions {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return false
+  const proto = Object.getPrototypeOf(x)
+  if (proto !== Object.prototype && proto !== null) return false
+  const keys = Object.keys(x)
+  return keys.length > 0 && keys.every((k) => OPTION_KEYS.has(k))
+}
+
 function normalise(def: unknown): Normal {
-  const [v, o] = Array.isArray(def) && def.length === 2 && def[1] && typeof def[1] === 'object' && !Array.isArray(def[1])
-    ? (def as [unknown, FixtureOptions])
-    : [def, {} as FixtureOptions]
+  const [v, o] =
+    Array.isArray(def) && def.length === 2 && isOptions(def[1])
+      ? (def as [unknown, FixtureOptions])
+      : [def, {} as FixtureOptions]
   const isFn = typeof v === 'function' && !o.value
   return {
     fn: isFn ? (v as FixtureFn<unknown>) : null,
