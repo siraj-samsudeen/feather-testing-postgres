@@ -3,7 +3,7 @@
 // and nothing else.
 import { createHash } from 'node:crypto'
 import { hostname } from 'node:os'
-import { cleanupStale, createFeatherDb, type SqlRunner } from '../../src/engine'
+import { cleanupStale, createFeatherDb, dropDatabase, type SqlRunner } from '../../src/engine'
 import { ENGINE, type RunnerApi } from './runner'
 
 const DEAD = 99999999 // above any pid_max: never a running process
@@ -54,7 +54,7 @@ export function abandonedDatabasesContract({ describe, test, expect }: RunnerApi
           expect([kept, await exists(names[kept])]).toEqual([kept, true])
       } finally {
         await holder.close()
-        for (const n of Object.values(names)) await sql.unsafe(`drop database if exists "${n}" with (force)`)
+        for (const n of Object.values(names)) await dropDatabase(sql, n)
         await closeAdminSql()
       }
     }, 60_000)

@@ -40,3 +40,5 @@ import { searchPathContract } from '../contract/search-path.contract'
 searchPathContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { effectiveDatabaseContract } from '../contract/effective-database.contract'
 effectiveDatabaseContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { dropDatabaseContract } from '../contract/drop-database.contract'
+dropDatabaseContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

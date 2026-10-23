@@ -234,6 +234,22 @@ export function resolveTestDatabaseUrl(
   throw refusal('database', name)
 }
 
+/** Drops a template or clone. WITH (FORCE) also ends sessions still on it,
+ * but Postgres refuses (42501) when the role isn't allowed to end one of them
+ * — a CREATEDB-only role and an autovacuum worker; a plain DROP may stop
+ * autovacuum itself, so that is the fallback. */
+export async function dropDatabase(sql: SqlRunner, name: string): Promise<void> {
+  const quoted = `"${name.replace(/"/g, '""')}"`
+  try {
+    await sql.unsafe(`drop database if exists ${quoted} with (force)`)
+  } catch (e) {
+    // SQLSTATE: postgres.js reports it as `code`, Bun.sql as `errno`
+    const { code, errno } = (e ?? {}) as { code?: string; errno?: string }
+    if (code !== '42501' && errno !== '42501') throw e
+    await sql.unsafe(`drop database if exists ${quoted}`)
+  }
+}
+
 /** The check after connecting: the server's own current_database() — what a
  * URL's path, PGDATABASE, a driver's defaults or anything else resolved to.
  * `expected`: exactly this database (a template or clone we created);
@@ -414,7 +430,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
           }
         }
         const name = `feather_t_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}_${++cloneSeq}`
-        const drop = () => admin!.sql.unsafe(`drop database if exists "${name}" with (force)`)
+        const drop = () => dropDatabase(admin!.sql, name)
         await admin!.sql.unsafe(`create database "${name}" template "${templateName}"`)
         let c: Conn | undefined
         try {
@@ -479,7 +495,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       await base?.close()
       if (admin) {
         if (templateName && templateCreated)
-          await admin.sql.unsafe(`drop database if exists "${templateName}" with (force)`)
+          await dropDatabase(admin.sql, templateName)
         templateName = null
         templateCreated = false
         await admin.close()
