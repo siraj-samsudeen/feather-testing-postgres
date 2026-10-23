@@ -325,7 +325,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
   let base: (Conn & { pg: any }) | null = null
   let snapshot: Blob | null = null
 
-  let current: { end(): Promise<void> } | null = null
+  let current: { ready: Promise<void>; end(): Promise<void> } | null = null
 
   const makeDb = (client: unknown) =>
     drz ? drz.drizzle({ client, schema: options.schema }) : noDrizzle()
@@ -405,37 +405,61 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
     },
 
     async beginTest() {
-      await self.start()
+      // Claim the one test slot before the first await, so racing calls
+      // cannot both open a test (an untracked transaction or clone would leak).
       if (current)
         throw new Error(
           'feather-testing-postgres: beginTest() while a test is open — tests sharing a FeatherDb must run sequentially (no test.concurrent)',
         )
-      if (strategy === 'tx') {
-        const h = await conn!.hold()
-        current = { end: h.release }
-        return { db: makeDb(h.client), sql: h.sql, raw: h.tx }
-      }
-      if (engine === 'pglite') {
-        const c = await bootPglite({ ...options.pglite, loadDataDir: snapshot })
-        current = { end: () => c.close() }
-        return { db: makeDb(c.client), sql: c.sql, raw: c.pg }
-      }
-      const name = `feather_t_${process.pid}_${++cloneSeq}`
-      await admin!.sql.unsafe(`create database "${name}" template "${templateName}"`)
-      const c = await connectPostgres(withDatabase(requireUrl(), name), driver)
-      current = {
-        async end() {
+      let end: () => Promise<void> = async () => {}
+      let opened!: () => void
+      const slot = { ready: new Promise<void>((r) => (opened = r)), end: () => end() }
+      current = slot
+      try {
+        await self.start()
+        if (strategy === 'tx') {
+          const h = await conn!.hold()
+          end = h.release
+          return { db: makeDb(h.client), sql: h.sql, raw: h.tx }
+        }
+        if (engine === 'pglite') {
+          const c = await bootPglite({ ...options.pglite, loadDataDir: snapshot })
+          end = () => c.close()
+          return { db: makeDb(c.client), sql: c.sql, raw: c.pg }
+        }
+        const name = `feather_t_${process.pid}_${++cloneSeq}`
+        const drop = () => admin!.sql.unsafe(`drop database if exists "${name}" with (force)`)
+        await admin!.sql.unsafe(`create database "${name}" template "${templateName}"`)
+        let c: Conn
+        try {
+          c = await connectPostgres(withDatabase(requireUrl(), name), driver)
+        } catch (e) {
+          await drop().catch(() => {})
+          throw e
+        }
+        end = async () => {
           await c.close()
-          await admin!.sql.unsafe(`drop database if exists "${name}" with (force)`)
-        },
+          await drop()
+        }
+        return { db: makeDb(c.client), sql: c.sql, raw: c.client }
+      } catch (e) {
+        if (current === slot) current = null
+        throw e
+      } finally {
+        opened()
       }
-      return { db: makeDb(c.client), sql: c.sql, raw: c.client }
     },
 
     async endTest() {
       const c = current
-      current = null
-      await c?.end()
+      if (!c) return
+      try {
+        await c.ready
+        await c.end()
+      } finally {
+        // held until teardown completes, so a beginTest() racing endTest() is refused
+        if (current === c) current = null
+      }
     },
 
     async close() {

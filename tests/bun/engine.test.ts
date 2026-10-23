@@ -7,3 +7,5 @@ engineCloneContract({ describe, test, expect, beforeAll, afterAll, beforeEach, a
 import { factoryContract } from '../contract/factory.contract'
 factoryContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 nowFrozenContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { oneTestAtATimeContract } from '../contract/one-test-at-a-time.contract'
+oneTestAtATimeContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
