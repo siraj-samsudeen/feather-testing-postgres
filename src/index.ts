@@ -14,6 +14,7 @@ export {
   saveRowSeed,
 } from './server'
 export {
+  cleanupStale,
   createFeatherDb,
   type EngineName,
   type FeatherDb,

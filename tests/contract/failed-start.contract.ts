@@ -15,7 +15,7 @@ async function leftoverTemplates(): Promise<number> {
   try {
     const t = await probe.beginTest()
     const [{ n }] = await t.sql<{ n: number }>`
-      select count(*)::int as n from pg_database where datname like ${`feather_tpl_${process.pid}_%`}`
+      select count(*)::int as n from pg_database where datname ~ ${`^feather_tpl_[0-9a-f]{8}_${process.pid}_`}`
     return n
   } finally {
     await probe.close()

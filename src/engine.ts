@@ -22,6 +22,8 @@
 // is built into Bun).
 
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { createHash } from 'node:crypto'
+import { hostname } from 'node:os'
 
 export type EngineName = 'pglite' | 'postgres'
 export type IsolationStrategy = 'tx' | 'clone'
@@ -327,16 +329,63 @@ function pidRunning(pid: number): boolean {
   }
 }
 
-/** Drops feather_tpl_<pid>_* / feather_t_<pid>_* databases left by crashed
- * runs: only our own prefixes, only when that pid is no longer running here,
- * and never forced — a database anyone is still connected to stays. */
-async function dropAbandoned(sql: SqlRunner): Promise<void> {
+/** This host's id in generated database names: the first 8 hex digits of
+ * sha1(hostname). A pid is only meaningful on the host that issued it. */
+const HOST_ID = createHash('sha1').update(hostname()).digest('hex').slice(0, 8)
+
+/** Generated names: feather_tpl_<host>_<pid>_<created, base36 ms>[_…] and
+ * feather_t_<host>_<pid>_<created>[_…]. */
+const NAME = /^feather_(?:tpl|t)_([0-9a-f]{8})_([0-9]+)_([0-9a-z]+)(?:_|$)/
+
+/** Default age before a leftover may be dropped. */
+const STALE_AFTER_MS = 3600_000
+
+async function sweep(sql: SqlRunner, opts: { anyHost: boolean; olderThan: number }): Promise<string[]> {
   const rows = await sql<{ datname: string }>`
-    select datname from pg_database where datname ~ '^feather_(tpl|t)_[0-9]+_'`
+    select datname from pg_database where datname ~ '^feather_(tpl|t)_[0-9a-f]{8}_[0-9]+_'`
+  const dropped: string[] = []
   for (const { datname } of rows) {
-    const pid = Number(/^feather_(?:tpl|t)_(\d+)_/.exec(datname)![1])
-    if (pid === process.pid || pidRunning(pid)) continue
-    await sql.unsafe(`drop database if exists "${datname.replace(/"/g, '""')}"`).catch(() => {})
+    const m = NAME.exec(datname)
+    if (!m) continue
+    const [, host, pidText, created] = m
+    const pid = Number(pidText)
+    const ours = host === HOST_ID
+    if (!ours && !opts.anyHost) continue
+    // a live process on this host owns it (and we never touch our own)
+    if (ours && (pid === process.pid || pidRunning(pid))) continue
+    const age = Date.now() - parseInt(created, 36)
+    if (!(age > opts.olderThan)) continue
+    // never forced: a database anyone is connected to stays
+    const ok = await sql.unsafe(`drop database if exists "${datname.replace(/"/g, '""')}"`).then(
+      () => true,
+      () => false,
+    )
+    if (ok) dropped.push(datname)
+  }
+  return dropped
+}
+
+/** start()'s automatic sweep: only databases named by THIS host, whose pid is
+ * no longer running, created over an hour ago. Leftovers from other hosts or
+ * containers sharing the server are never touched here — see cleanupStale. */
+const dropAbandoned = (sql: SqlRunner) => sweep(sql, { anyHost: false, olderThan: STALE_AFTER_MS })
+
+/** Opt-in cleanup of leftovers from any host (e.g. crashed CI containers on a
+ * shared server): drops feather_tpl_* / feather_t_* databases created more
+ * than `olderThan` ms ago, except this host's live runs, never forced. Use an
+ * age longer than any run. Returns the names dropped. */
+export async function cleanupStale(opts: {
+  olderThan: number
+  url?: string
+  driver?: PostgresDriver
+}): Promise<string[]> {
+  const url = opts.url ?? process.env.DATABASE_URL
+  if (!url) throw new Error('feather-testing-postgres: cleanupStale needs DATABASE_URL (or the `url` option)')
+  const c = await connectPostgres(url, opts.driver ?? defaultDriver(), 1)
+  try {
+    return await sweep(c.sql, { anyHost: true, olderThan: opts.olderThan })
+  } finally {
+    await c.close()
   }
 }
 
@@ -408,7 +457,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       if (strategy === 'tx') conn = await connectPostgres(u, driver)
       else {
         admin = await connectPostgres(u, driver, 1)
-        templateName = `feather_tpl_${process.pid}_${Date.now().toString(36)}`
+        templateName = `feather_tpl_${HOST_ID}_${process.pid}_${Date.now().toString(36)}`
         await admin.sql.unsafe(`create database "${templateName}"`)
       }
       await dropAbandoned((conn ?? admin)!.sql)
@@ -466,7 +515,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
           end = () => c.close()
           return { db: makeDb(c.client), sql: c.sql, raw: c.pg }
         }
-        const name = `feather_t_${process.pid}_${++cloneSeq}`
+        const name = `feather_t_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${++cloneSeq}`
         const drop = () => admin!.sql.unsafe(`drop database if exists "${name}" with (force)`)
         await admin!.sql.unsafe(`create database "${name}" template "${templateName}"`)
         let c: Conn
