@@ -23,3 +23,5 @@ import { rawFacadeContract } from '../contract/raw-facade.contract'
 rawFacadeContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { dbClientContract } from '../contract/db-client.contract'
 dbClientContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { hiddenClientContract } from '../contract/hidden-client.contract'
+hiddenClientContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

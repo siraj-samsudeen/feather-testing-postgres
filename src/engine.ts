@@ -340,6 +340,26 @@ function cloneGate(): RawGate & { ended: boolean } {
   return gate
 }
 
+function clientHiddenError(): Error {
+  return new Error('feather-testing-postgres: db.$client is not available in tests: use db, sql or raw')
+}
+
+/** A clone's drizzle db (and its transactions) with $client hidden, as under
+ * tx. Drizzle never reads $client itself — it runs on its own session. */
+function hideClient(db: any): any {
+  if (Object.prototype.hasOwnProperty.call(db, '$client')) delete db.$client
+  return new Proxy(db, {
+    get(target, prop) {
+      if (prop === '$client') throw clientHiddenError()
+      if (prop === 'transaction')
+        return (fn: (tx: unknown) => unknown, config?: unknown) =>
+          target.transaction((tx: any) => fn(hideClient(tx)), config)
+      const v = Reflect.get(target, prop)
+      return typeof v === 'function' ? v.bind(target) : v
+    },
+  })
+}
+
 function cancelledError(): Error {
   return new Error('feather-testing-postgres: transaction cancelled — its parent transaction failed before it started')
 }
@@ -435,10 +455,12 @@ function newNode(real: any): TxNode {
 
 function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
   const { active } = sched
+  delete rootDb.$client // hidden in tests; drizzle uses its own session
   sched.root.real = rootDb
   const wrap = (real: any, own: TxNode): any =>
     new Proxy(real, {
       get(target, prop) {
+        if (prop === '$client') throw clientHiddenError()
         if (prop === 'transaction')
           return (fn: (tx: unknown) => Promise<unknown>, config?: unknown) => {
             const parent = active.getStore() ?? own
@@ -479,7 +501,8 @@ function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
 
 /** The client drizzle runs a test's queries on (Bun.sql / postgres.js): an
  * adapter object of our own — like raw, never a proxy over the driver, so
- * nothing reachable from db.$client is a driver object. It offers only what
+ * nothing reachable from drizzle's session is a driver object (db.$client
+ * itself is hidden). It offers only what
  * drizzle's bun-sql and postgres-js sessions use: unsafe(q, p, opts) (awaited
  * or .values()), begin/savepoint (a SAVEPOINT, so db.transaction() nests; the
  * callback gets another adapter), and options (drizzle writes its parsers
@@ -882,7 +905,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
             gate.ended = true
             return c.close()
           }
-          return { db: makeDb(c.client), sql: c.sql, raw: rawFacade(pglitePort(c.pg, true), gate, false) }
+          return { db: drz ? hideClient(makeDb(c.client)) : makeDb(c.client), sql: c.sql, raw: rawFacade(pglitePort(c.pg, true), gate, false) }
         }
         const name = `feather_t_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}_${++cloneSeq}`
         const drop = () => admin!.sql.unsafe(`drop database if exists "${name}" with (force)`)
@@ -900,7 +923,11 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
           await c.close()
           await drop()
         }
-        return { db: makeDb(c.client), sql: c.sql, raw: rawFacade(taggedPort(c.client, driver, true), gate, false) }
+        return {
+          db: drz ? hideClient(makeDb(c.client)) : makeDb(c.client),
+          sql: c.sql,
+          raw: rawFacade(taggedPort(c.client, driver, true), gate, false),
+        }
       } catch (e) {
         if (current === slot) current = null
         throw e

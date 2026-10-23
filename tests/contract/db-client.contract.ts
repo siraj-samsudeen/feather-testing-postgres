@@ -1,6 +1,6 @@
-// db.$client (the object drizzle runs queries on) is an adapter of our own,
-// like raw: nothing reachable from it is a driver object, and every path
-// through it refuses once the test has ended.
+// The client drizzle runs a test's queries on (its session's client; db.$client
+// itself is hidden) is an adapter of our own, like raw: nothing reachable from
+// it is a driver object, and every path through it refuses once the test ended.
 import { createFeatherDb, type PostgresDriver } from '../../src/engine'
 import { ENGINE, MIGRATIONS, type RunnerApi } from './runner'
 import { ENDED, foreignReachable, ownSurface, refused } from './reflection'
@@ -15,13 +15,13 @@ export function dbClientContract({ describe, test, expect }: RunnerApi) {
         ? [{ label: 'bun', driver: 'bun' }, { label: 'postgres-js', driver: 'postgres-js' }]
         : [{ label: 'postgres-js', driver: 'postgres-js' }]
 
-  describe(`db.$client (${ENGINE})`, () => {
+  describe(`drizzle's session client (${ENGINE})`, () => {
     for (const v of variants) {
-      test(`no driver object is reachable from db.$client (${v.label})`, async () => {
+      test(`no driver object is reachable from the session client (${v.label})`, async () => {
         const fdb = createFeatherDb({ driver: v.driver, migrations: MIGRATIONS })
         try {
           const t = await fdb.beginTest()
-          const client = t.db.$client
+          const client = (t.db as any).session.client
           const children: object[] = []
           // the client drizzle hands a transaction (its session's client)
           await t.db.transaction(async (tx: any) => {
@@ -37,11 +37,11 @@ export function dbClientContract({ describe, test, expect }: RunnerApi) {
         }
       }, 30_000)
 
-      test(`every path through db.$client refuses after endTest; nothing persists (${v.label})`, async () => {
+      test(`every path through the session client refuses after endTest; nothing persists (${v.label})`, async () => {
         const fdb = createFeatherDb({ driver: v.driver, migrations: MIGRATIONS })
         try {
           const t = await fdb.beginTest()
-          const c = t.db.$client as any
+          const c = (t.db as any).session.client
           const kept: Record<string, any> = {}
           await t.db.transaction(async (tx: any) => {
             kept.child = tx.session.client

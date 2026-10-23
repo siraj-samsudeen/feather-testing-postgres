@@ -162,6 +162,9 @@ transaction; `raw` is a small raw-SQL facade (below).
 Every member checks that the test is still open, and results are plain data.
 Batched reads (cursors) are not offered: test data is small — page with
 `LIMIT`/`OFFSET` instead.
+
+`db.$client` is hidden in tests: reading it throws ("use db, sql or raw").
+Drizzle itself never needs it.
 **Driver features beyond this list are not available in tests, by design.**
 A driver handle is full of executables (lazy queries, cursors, child handles
 passed to callbacks, bound copies) and every proxy we put around one leaked

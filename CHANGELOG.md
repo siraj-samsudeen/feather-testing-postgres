@@ -15,7 +15,14 @@ Additive — every 0.2 export keeps its meaning.
 - Under `tx`, `raw` is serialised with `db` and `sql`: raw savepoints queue like
   app transactions, so a concurrent write never lands inside (and vanishes
   with) a raw savepoint.
-  `db.$client` is an adapter of our own (like `raw`), not the driver's client.
+  The client drizzle runs on is an adapter of our own (like `raw`), not the
+  driver's client.
+- **`db.$client` is hidden in tests (author's decision):** reading it on the
+  test `db` or a transaction handle throws "db.$client is not available in
+  tests: use db, sql or raw", and `in`, descriptors and spreading don't see
+  it. Drizzle never reads `$client` itself, so queries, transactions,
+  `execute`, `$count` and relational queries are unaffected. It reached
+  transaction methods that bypassed the per-test scheduler.
 - `raw.cursor` removed (author's decision): cursors bypassed the scheduler and
   could hang teardown; may return later as its own issue.
 - **`raw` is a facade, decided by the author after repeated proxy escapes.**
