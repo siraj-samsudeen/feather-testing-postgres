@@ -186,12 +186,70 @@ const OPENING: TxNode = { real: null, tail: Promise.resolve(), failed: false, pa
 class Scheduler {
   readonly active = new AsyncLocalStorage<TxNode>()
   readonly root: TxNode = { real: null, tail: Promise.resolve(), failed: false }
+  /** Set when endTest() begins: from then on nothing may reach the connection
+   * (after the test transaction ends, postgres.js would autocommit it). */
+  ended = false
+
+  endedError(): Error {
+    return new Error(
+      "feather-testing-postgres: this test has ended — a query ran after endTest; await your app's work before the test finishes",
+    )
+  }
+
+  /** Throws if the test has ended. */
+  check(): void {
+    if (this.ended) throw this.endedError()
+  }
 
   query<T>(fn: () => T | PromiseLike<T>): Promise<T> {
     const n = this.active.getStore() ?? this.root
-    if (n.passthrough) return (async () => fn())()
-    return n.tail.then(fn)
+    // checked when issued and again when its queued turn comes
+    const go = () => {
+      this.check()
+      return fn()
+    }
+    if (n.passthrough) return (async () => go())()
+    if (this.ended) return Promise.reject(this.endedError())
+    return n.tail.then(go)
   }
+}
+
+/** Ends a held test transaction: refuse new work, let in-flight app
+ * transactions settle (their next query fails fast, and their savepoints roll
+ * back inside the still-open test transaction rather than on the bare
+ * connection), then roll the test transaction back. The wait is bounded so
+ * app code that never settles cannot hang endTest(). */
+async function endHeld(sched: Scheduler, release: () => Promise<void>): Promise<void> {
+  sched.ended = true
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([
+    sched.root.tail,
+    new Promise((r) => {
+      timer = setTimeout(r, IN_FLIGHT_GRACE_MS)
+    }),
+  ])
+  clearTimeout(timer)
+  await release()
+}
+
+const IN_FLIGHT_GRACE_MS = 2000
+
+/** The driver's own transaction handle, refusing use once the test ended. */
+function guardRaw(handle: any, sched: Scheduler): unknown {
+  return new Proxy(handle, {
+    get(target, prop) {
+      const v = target[prop]
+      if (typeof v !== 'function') return v
+      return (...args: unknown[]) => {
+        sched.check()
+        return v.apply(target, args)
+      }
+    },
+    apply(target, _this, args) {
+      sched.check()
+      return target(...args)
+    },
+  })
 }
 
 function newNode(real: any): TxNode {
@@ -207,7 +265,9 @@ function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
         if (prop === 'transaction')
           return (fn: (tx: unknown) => Promise<unknown>, config?: unknown) => {
             const parent = active.getStore() ?? own
+            if (sched.ended) return Promise.reject(sched.endedError())
             const run = parent.tail.then(() => {
+              sched.check()
               if (parent.failed)
                 throw new Error(
                   'feather-testing-postgres: transaction cancelled — its parent transaction failed before it started',
@@ -247,6 +307,7 @@ function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
  * so drizzle's `db.transaction()` nests instead of issuing BEGIN. */
 function savepointingTaggedTx(tx: any, root: any, sched: Scheduler): unknown {
   const savepoint = (target: any) => (a: unknown, b?: unknown) => {
+    sched.check()
     const fn = (typeof a === 'function' ? a : b) as (h: unknown) => unknown
     // the handle drizzle runs the transaction's queries on: gated as well
     return target.savepoint((h: any) => fn(adapt(h)))
@@ -283,14 +344,21 @@ function savepointingPgliteTx(tx: any, sched: Scheduler): unknown {
     query: (...a: unknown[]) => sched.query(() => tx.query(...a)),
     exec: (...a: unknown[]) => sched.query(() => tx.exec(...a)),
     async transaction(fn: (c: unknown) => Promise<unknown>) {
+      // the savepoint machinery never touches the connection after the test
+      // ended (the test transaction is gone)
+      const machinery = (q: string) => {
+        sched.check()
+        return tx.query(q)
+      }
       const name = `feather_sp_${++n}`
-      await tx.query(`savepoint ${name}`)
+      await machinery(`savepoint ${name}`)
       try {
         const result = await fn(client)
-        await tx.query(`release savepoint ${name}`)
+        await machinery(`release savepoint ${name}`)
         return result
       } catch (e) {
-        await tx.query(`rollback to savepoint ${name}`)
+        // the original failure wins over a failed rollback
+        await machinery(`rollback to savepoint ${name}`).catch(() => {})
         throw e
       }
     },
@@ -320,7 +388,13 @@ async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Pr
     async hold() {
       const { tx, release } = await holdOpen((fn) => root.begin(fn))
       const sched = new Scheduler()
-      return { tx, client: savepointingTaggedTx(tx, root, sched), sql: taggedSql(tx, sched), sched, release }
+      return {
+        tx: guardRaw(tx, sched),
+        client: savepointingTaggedTx(tx, root, sched),
+        sql: taggedSql(tx, sched),
+        sched,
+        release: () => endHeld(sched, release),
+      }
     },
     async close() {
       if (driver === 'bun') await root.close()
@@ -346,7 +420,13 @@ async function bootPglite(options: Record<string, unknown> = {}): Promise<Conn &
     async hold() {
       const { tx, release } = await holdOpen((fn) => pg.transaction(fn))
       const sched = new Scheduler()
-      return { tx, client: savepointingPgliteTx(tx, sched), sql: pgliteSql(tx, sched), sched, release }
+      return {
+        tx: guardRaw(tx, sched),
+        client: savepointingPgliteTx(tx, sched),
+        sql: pgliteSql(tx, sched),
+        sched,
+        release: () => endHeld(sched, release),
+      }
     },
     close: () => pg.close(),
   }

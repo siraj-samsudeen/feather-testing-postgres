@@ -108,7 +108,15 @@ flight together would otherwise interleave. A transaction waits for its open
 siblings and settles only after its own child transactions (children still
 queued when it fails are cancelled with a clear error); a plain query through
 `db` or `sql` waits for transactions open outside it, and runs at once inside
-the transaction whose callback issued it. `raw` is not serialised. (Elysia's `handle` needs a
+the transaction whose callback issued it. `raw` is not serialised.
+
+**Nothing outlives the test.** Once `endTest()` begins, `db`, `sql` and `raw`
+reject every query — issued late or still queued — with "this test has ended
+— a query ran after endTest; await your app's work before the test finishes"
+(drizzle wraps it as the `cause` of its query error). App transactions still
+in flight get up to 2 s to settle inside the test transaction before it rolls
+back, so nothing reaches the bare connection (where postgres.js would
+autocommit). (Elysia's `handle` needs a
 URL whose host is at least as long as `localhost`; `http://app/x` misroutes.)
 
 ### The API

@@ -321,6 +321,53 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
       expect(await titles()).toEqual(['inside'])
     })
 
+    // Work the app leaves running when the test body returns must never reach
+    // the bare connection (where postgres.js would autocommit it).
+    const late: { errors: unknown[]; settled: Promise<unknown>[] } = { errors: [], settled: [] }
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+    test('schedules writes that outlive the test (not awaited)', async () => {
+      const record = (p: Promise<unknown>) =>
+        late.settled.push(p.then(() => late.errors.push('ran'), (e) => late.errors.push(e)))
+      const db = t.db
+      const sql = t.sql
+      record(sleep(30).then(() => db.insert(todos).values({ title: 'late via db' })))
+      record(sleep(30).then(() => sql`insert into todos (title) values ('late via sql')`))
+      record(
+        sleep(30).then(() =>
+          db.transaction(async (tx: any) => {
+            await tx.insert(todos).values({ title: 'late transaction' })
+          }),
+        ),
+      )
+      // ...and one queued behind a transaction still open when the test ends
+      record(db.transaction(async (tx: any) => {
+        await sleep(30)
+        await tx.insert(todos).values({ title: 'open at the end' })
+      }))
+      record(db.insert(todos).values({ title: 'queued behind it' }))
+    })
+
+    test('...are rejected with a clear error, and nothing was committed', async () => {
+      await Promise.all(late.settled)
+      expect(late.errors.length).toBe(5)
+      // drizzle wraps driver errors in DrizzleQueryError, keeping ours as cause
+      for (const e of late.errors)
+        expect(`${e} ${(e as { cause?: unknown })?.cause}`).toMatch(/this test has ended — a query ran after endTest/)
+      const [{ n }] = await t.sql<{ n: number }>`select count(*)::int as n from todos`
+      expect(n).toBe(0)
+      if (ENGINE === 'postgres') {
+        const fresh = createFeatherDb({})
+        try {
+          const f = await fresh.beginTest()
+          const [{ m }] = await f.sql<{ m: number }>`select count(*)::int as m from todos`
+          expect(m).toBe(0)
+        } finally {
+          await fresh.close()
+        }
+      }
+    })
+
     test('refuses a second open test (sequential tests only)', async () => {
       await expect(fdb.beginTest()).rejects.toThrow(/sequentially/)
     })
