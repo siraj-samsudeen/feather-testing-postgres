@@ -11,3 +11,13 @@ export {
   type SeedFn,
   type CreateUserFn,
 } from './server'
+export {
+  createFeatherDb,
+  type EngineName,
+  type FeatherDb,
+  type FeatherDbOptions,
+  type IsolationStrategy,
+  type PostgresDriver,
+  type SqlRunner,
+  type TestDb,
+} from './engine'
