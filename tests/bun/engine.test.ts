@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
-import { engineCloneContract } from '../contract/engine-clone.contract'
+import { engineCloneContract, templateNamesContract } from '../contract/engine-clone.contract'
 import { engineTxContract, nowFrozenContract } from '../contract/engine-tx.contract'
 
 engineTxContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
@@ -13,3 +13,4 @@ import { failedStartContract } from '../contract/failed-start.contract'
 failedStartContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { abandonedDatabasesContract } from '../contract/abandoned-databases.contract'
 abandonedDatabasesContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+templateNamesContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

@@ -22,7 +22,7 @@
 // is built into Bun).
 
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { hostname } from 'node:os'
 
 export type EngineName = 'pglite' | 'postgres'
@@ -408,6 +408,10 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
   // clone strategy, Postgres: an admin connection plus a template database.
   let admin: Conn | null = null
   let templateName: string | null = null
+  // Only a template this engine created is ever dropped by it.
+  let templateCreated = false
+  // Per-instance: two engines started in the same millisecond never share names.
+  const instanceId = randomBytes(4).toString('hex')
   // clone strategy, PGlite: a migrated base instance and its snapshot.
   let base: (Conn & { pg: any }) | null = null
   let snapshot: Blob | null = null
@@ -457,8 +461,9 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       if (strategy === 'tx') conn = await connectPostgres(u, driver)
       else {
         admin = await connectPostgres(u, driver, 1)
-        templateName = `feather_tpl_${HOST_ID}_${process.pid}_${Date.now().toString(36)}`
+        templateName = `feather_tpl_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}`
         await admin.sql.unsafe(`create database "${templateName}"`)
+        templateCreated = true
       }
       await dropAbandoned((conn ?? admin)!.sql)
       drz = await loadDrizzle(driver)
@@ -515,7 +520,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
           end = () => c.close()
           return { db: makeDb(c.client), sql: c.sql, raw: c.pg }
         }
-        const name = `feather_t_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${++cloneSeq}`
+        const name = `feather_t_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}_${++cloneSeq}`
         const drop = () => admin!.sql.unsafe(`drop database if exists "${name}" with (force)`)
         await admin!.sql.unsafe(`create database "${name}" template "${templateName}"`)
         let c: Conn
@@ -557,7 +562,10 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       await conn?.close()
       await base?.close()
       if (admin) {
-        if (templateName) await admin.sql.unsafe(`drop database if exists "${templateName}" with (force)`)
+        if (templateName && templateCreated)
+          await admin.sql.unsafe(`drop database if exists "${templateName}" with (force)`)
+        templateName = null
+        templateCreated = false
         await admin.close()
       }
       conn = base = admin = null

@@ -65,3 +65,33 @@ export function engineCloneContract({ describe, test, expect, beforeAll, afterAl
       })
   })
 }
+
+/** Two clone engines started in the same millisecond get distinct templates,
+ * and each drops only the template it created. */
+export function templateNamesContract({ describe, test, expect }: RunnerApi) {
+  if (ENGINE !== 'postgres') return
+  describe('clone template names', () => {
+    test('same-millisecond engines do not share (or drop) a template', async () => {
+      const a = createFeatherDb({ strategy: 'clone', migrations: MIGRATIONS })
+      const b = createFeatherDb({ strategy: 'clone', migrations: MIGRATIONS })
+      const realNow = Date.now
+      const frozen = realNow()
+      Date.now = () => frozen
+      try {
+        await Promise.all([a.start(), b.start()])
+      } finally {
+        Date.now = realNow
+      }
+      try {
+        await a.close()
+        const t = await b.beginTest() // b's template must still exist
+        const [{ n }] = await t.sql<{ n: number }>`select count(*)::int as n from users`
+        expect(n).toBe(0)
+        await b.endTest()
+      } finally {
+        await a.close()
+        await b.close()
+      }
+    }, 30_000)
+  })
+}
