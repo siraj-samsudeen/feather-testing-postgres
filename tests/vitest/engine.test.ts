@@ -33,3 +33,5 @@ import { clonePoolContract } from '../contract/clone-pool.contract'
 clonePoolContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { lostContextContract } from '../contract/lost-context.contract'
 lostContextContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { slowQueryContract } from '../contract/slow-query.contract'
+slowQueryContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

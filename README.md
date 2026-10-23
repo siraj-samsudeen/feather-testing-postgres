@@ -164,7 +164,10 @@ await fdb.close()
 
 `db` is Drizzle (drizzle-orm `0.45.x`, an optional peer); `sql` is a tagged
 template returning rows, plus `sql.unsafe(text, params)`, on the same
-transaction; `raw` is a small raw-SQL facade (below).
+transaction; `raw` is a small raw-SQL facade (below). The rows differ:
+`sql` returns the driver's own row objects (Bun.sql / postgres.js / PGlite
+results, e.g. with their date and JSON parsing), while `raw` returns plain
+objects copied out of them.
 
 ### `raw`
 
@@ -174,7 +177,7 @@ transaction; `raw` is a small raw-SQL facade (below).
 |---|---|
 | `` raw`select … ${v}` `` | A query; interpolated values are bound parameters. Resolves to plain row objects. |
 | `raw.unsafe(text, params?)` | A query from SQL built at runtime. |
-| `raw.savepoint(fn)` / `raw.begin(fn)` | Runs `fn(child)` in a SAVEPOINT (a real transaction on a `clone` database): kept if it resolves, rolled back if it throws. `child` is another `raw`. Inside a test the transaction is already open, so `begin` is a savepoint too. |
+| `raw.savepoint(fn)` / `raw.begin(fn)` | Runs `fn(child)`: kept if it resolves, rolled back if it throws. `child` is another `raw`. Under `tx` both are SAVEPOINTs (the test's transaction is already open); only on a `clone` database is the outermost `begin`/`savepoint` a real transaction. |
 
 Every member checks that the test is still open, and results are plain data.
 Batched reads (cursors) are not offered: test data is small — page with
