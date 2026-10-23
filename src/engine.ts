@@ -21,6 +21,8 @@
 // needs (@electric-sql/pglite, postgres, drizzle-orm are optional peers; Bun.sql
 // is built into Bun).
 
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 export type EngineName = 'pglite' | 'postgres'
 export type IsolationStrategy = 'tx' | 'clone'
 export type PostgresDriver = 'bun' | 'postgres-js'
@@ -151,16 +153,35 @@ function pgliteSql(client: any): SqlRunner {
   return run
 }
 
+/** Serialises the app's top-level transactions on one test handle. Concurrent
+ * requests each calling db.transaction() would otherwise interleave their
+ * SAVEPOINTs on the single connection (releasing one drops the other; rolling
+ * one back undoes the other's writes). Each whole transaction waits for the
+ * previous one. A transaction opened from inside another (through `tx`, or
+ * through the outer `db` again) runs at once as a nested savepoint, so real
+ * nesting never waits on itself. */
+function appTransactionGate() {
+  const inside = new AsyncLocalStorage<true>()
+  let tail: Promise<unknown> = Promise.resolve()
+  return <T>(fn: () => Promise<T>): Promise<T> => {
+    if (inside.getStore()) return fn()
+    const run = tail.then(() => inside.run(true, fn))
+    tail = run.catch(() => {})
+    return run
+  }
+}
+
 /** A Bun.sql / postgres.js transaction handle whose `begin` opens a SAVEPOINT,
  * so drizzle's `db.transaction()` nests instead of issuing BEGIN. */
 function savepointingTaggedTx(tx: any, root: any): unknown {
+  const gate = appTransactionGate()
   return new Proxy(tx, {
     get(target, prop) {
       // drizzle's postgres-js driver installs parsers on client.options; a
       // transaction shares its root's connection and options.
       if (prop === 'options' && target.options === undefined) return root.options
       if (prop === 'begin')
-        return (a: unknown, b?: unknown) => target.savepoint(typeof a === 'function' ? a : b)
+        return (a: unknown, b?: unknown) => gate(() => target.savepoint(typeof a === 'function' ? a : b))
       const v = target[prop]
       return typeof v === 'function' ? v.bind(target) : v
     },
@@ -172,21 +193,23 @@ function savepointingTaggedTx(tx: any, root: any): unknown {
  * pglite session calls client.transaction for db.transaction()). */
 function savepointingPgliteTx(tx: any): unknown {
   let n = 0
+  const gate = appTransactionGate()
   const client: any = {
     query: (...a: unknown[]) => tx.query(...a),
     exec: (...a: unknown[]) => tx.exec(...a),
-    async transaction(fn: (c: unknown) => Promise<unknown>) {
-      const name = `feather_sp_${++n}`
-      await tx.query(`savepoint ${name}`)
-      try {
-        const result = await fn(client)
-        await tx.query(`release savepoint ${name}`)
-        return result
-      } catch (e) {
-        await tx.query(`rollback to savepoint ${name}`)
-        throw e
-      }
-    },
+    transaction: (fn: (c: unknown) => Promise<unknown>) =>
+      gate(async () => {
+        const name = `feather_sp_${++n}`
+        await tx.query(`savepoint ${name}`)
+        try {
+          const result = await fn(client)
+          await tx.query(`release savepoint ${name}`)
+          return result
+        } catch (e) {
+          await tx.query(`rollback to savepoint ${name}`)
+          throw e
+        }
+      }),
   }
   return client
 }

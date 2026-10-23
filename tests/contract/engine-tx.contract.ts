@@ -76,6 +76,73 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
       expect(n).toBe(1)
     })
 
+    // Concurrent requests each opening db.transaction() on the one test
+    // handle: their savepoints must not interleave.
+    const tick = () => new Promise((r) => setTimeout(r, 2))
+    const titles = async () => (await t.db.select().from(todos).orderBy(todos.id)).map((r: any) => r.title)
+
+    test('two concurrent app transactions both commit', async () => {
+      await Promise.all(
+        ['first', 'second'].map((title) =>
+          t.db.transaction(async (tx: any) => {
+            await tick()
+            await tx.insert(todos).values({ title })
+            await tick()
+          }),
+        ),
+      )
+      expect((await titles()).sort()).toEqual(['first', 'second'])
+    })
+
+    test('a sibling rolling back does not undo a committed sibling', async () => {
+      const results = await Promise.allSettled([
+        t.db.transaction(async (tx: any) => {
+          await tx.insert(todos).values({ title: 'rolled back' })
+          await tick()
+          await tick()
+          throw new Error('A fails')
+        }),
+        t.db.transaction(async (tx: any) => {
+          await tick()
+          await tx.insert(todos).values({ title: 'committed' })
+        }),
+      ])
+      expect(results.map((r) => r.status)).toEqual(['rejected', 'fulfilled'])
+      expect(await titles()).toEqual(['committed'])
+    })
+
+    test('concurrent siblings with real nesting inside each', async () => {
+      await Promise.all(
+        ['x', 'y'].map((p) =>
+          t.db.transaction(async (tx: any) => {
+            await tx.insert(todos).values({ title: `${p}-outer` })
+            await tick()
+            await tx
+              .transaction(async (tx2: any) => {
+                await tx2.insert(todos).values({ title: `${p}-inner-dropped` })
+                throw new Error('inner')
+              })
+              .catch(() => {})
+            await tx.transaction(async (tx2: any) => {
+              await tick()
+              await tx2.insert(todos).values({ title: `${p}-inner-kept` })
+            })
+          }),
+        ),
+      )
+      expect((await titles()).sort()).toEqual(['x-inner-kept', 'x-outer', 'y-inner-kept', 'y-outer'])
+    })
+
+    test('an app transaction that calls db.transaction() again (not tx) still nests', async () => {
+      await t.db.transaction(async (tx: any) => {
+        await tx.insert(todos).values({ title: 'outer' })
+        await t.db.transaction(async (tx2: any) => {
+          await tx2.insert(todos).values({ title: 'via db' })
+        })
+      })
+      expect(await titles()).toEqual(['outer', 'via db'])
+    })
+
     test('refuses a second open test (sequential tests only)', async () => {
       await expect(fdb.beginTest()).rejects.toThrow(/sequentially/)
     })
