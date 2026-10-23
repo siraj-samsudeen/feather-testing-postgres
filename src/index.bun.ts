@@ -1,8 +1,8 @@
 // The root entry under Bun (the "bun" export condition): the runner-free API,
 // with no vitest import. The Vitest helpers are stubs that say what to use
 // instead, so code importing them still loads.
-import type { createPgTest as CreatePgTest } from './server'
-import type { createDbTest as CreateDbTest } from './vitest'
+import type { PgTestBindings, PgTestOptions } from './client'
+import type { FeatherDb, FeatherDbOptions } from './engine'
 
 export * from './core'
 
@@ -13,10 +13,10 @@ const vitestOnly = (name: string) =>
       "or postgresFixtures() with feather-testing-core's defineTest.",
   )
 
-export const createPgTest: typeof CreatePgTest = () => {
+export const createPgTest = (_bindings: PgTestBindings, _options?: PgTestOptions): never => {
   throw vitestOnly('createPgTest')
 }
 
-export const createDbTest: typeof CreateDbTest = () => {
+export const createDbTest = (_options?: FeatherDbOptions | FeatherDb): never => {
   throw vitestOnly('createDbTest')
 }

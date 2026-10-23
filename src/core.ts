@@ -1,10 +1,19 @@
 // Everything in the root entry that needs no test runner. index.ts adds the
 // Vitest helpers; index.bun.ts (the "bun" export condition) adds stubs for them.
 export { withSandbox, type SandboxHooks, type SqlLike } from './sandbox'
-export { makeClient, saveRowSeed, TestApiError, type AppLike, type SeedCallback, type TestClient } from './client'
-// types only: erased at runtime, so server.ts (which imports vitest) isn't loaded
-export type { CreateUserFn, PgTestBindings, PgTestFixtures, PgTestOptions, SeedFn } from './server'
-export type { DbTestFixtures } from './vitest'
+export {
+  makeClient,
+  saveRowSeed,
+  TestApiError,
+  type AppLike,
+  type CreateUserFn,
+  type PgTestBindings,
+  type PgTestFixtures,
+  type PgTestOptions,
+  type SeedCallback,
+  type SeedFn,
+  type TestClient,
+} from './client'
 export {
   cleanupStale,
   resolveTestDatabaseUrl,
@@ -22,6 +31,7 @@ export {
 export {
   postgresFixtures,
   useFixtures,
+  type DbTestFixtures,
   type FixtureDef,
   type FixtureFn,
   type FixtureOptions,

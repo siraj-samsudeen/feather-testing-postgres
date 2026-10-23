@@ -4,32 +4,22 @@
 // HTTP server, no mocks, real Postgres.
 
 import { test as base } from 'vitest'
-import { withSandbox, type SandboxHooks } from './sandbox'
-import { makeClient, saveRowSeed, type AppLike, type SeedCallback, type TestClient } from './client'
+import { withSandbox } from './sandbox'
+import { makeClient, saveRowSeed, type PgTestBindings, type PgTestFixtures, type PgTestOptions, type TestClient } from './client'
 
-export { makeClient, saveRowSeed, TestApiError, type AppLike, type SeedCallback, type TestClient } from './client'
-
-export interface PgTestBindings extends SandboxHooks {
-  app: AppLike
-  /** Mint a session token for an existing enabled user (no password needed —
-   * bind to the server's issueSession). Needed by `admin`, `client` and
-   * `createUser`; harnesses without auth can leave it out. */
-  mintToken?(user: string): Promise<string>
-  /** Create a user through the real save lifecycle; returns its `row_id`.
-   * Called inside the sandbox, so it rolls back with the test. Needed by
-   * `client` and `createUser`. */
-  insertUser?(opts: { email: string; fullName?: string; roles: string[] }): Promise<string>
-  /** How `seed(table, values)` inserts a row. Default (0.2 behaviour): POST
-   * `/api/save_row` as the administrator — featherbase's save endpoint. */
-  seed?: SeedCallback
-  /** The administrator account name. Default: 'Administrator'. */
-  adminUser?: string
-}
-
-export type SeedFn = (
-  table: string,
-  values?: Record<string, unknown>,
-) => Promise<Record<string, unknown> & { row_id: string }>
+export {
+  makeClient,
+  saveRowSeed,
+  TestApiError,
+  type AppLike,
+  type CreateUserFn,
+  type PgTestBindings,
+  type PgTestFixtures,
+  type PgTestOptions,
+  type SeedCallback,
+  type SeedFn,
+  type TestClient,
+} from './client'
 
 function required<K extends 'mintToken' | 'insertUser'>(
   b: PgTestBindings,
@@ -42,34 +32,6 @@ function required<K extends 'mintToken' | 'insertUser'>(
   // bound: method-style bindings (`mintToken(u) { return this.issueSession(u) }`) keep `this`
   return (fn as Function).bind(b) as NonNullable<PgTestBindings[K]>
 }
-
-export type CreateUserFn = (opts?: {
-  email?: string
-  fullName?: string
-  roles?: string[]
-}) => Promise<TestClient>
-
-export interface PgTestFixtures {
-  /** The sandbox transaction handle — raw SQL access inside the test tx. */
-  db: unknown
-  /** Anonymous in-process client. */
-  api: TestClient
-  /** Administrator-authenticated client. */
-  admin: TestClient
-  /** A fresh regular user (created inside the sandbox) with the harness's
-   * default roles. */
-  client: TestClient
-  /** Insert a row through the real save lifecycle as Administrator. */
-  seed: SeedFn
-  /** Create an additional user; returns an authenticated client. */
-  createUser: CreateUserFn
-}
-
-export interface PgTestOptions {
-  /** Roles granted to `client` / `createUser()` users by default. */
-  defaultRoles?: string[]
-}
-
 let userCounter = 0
 
 export function createPgTest(b: PgTestBindings, opts: PgTestOptions = {}) {

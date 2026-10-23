@@ -1,5 +1,8 @@
 // The in-process test client: runner-free (no vitest), so the bun entry and
-// the Vitest helpers share it.
+// the Vitest helpers share it — as do the createPgTest types, so nothing
+// runner-free reaches vitest, not even through its types.
+
+import type { SandboxHooks } from './sandbox'
 
 export interface AppLike {
   /** Hono's `app.request` may answer synchronously, so accept either shape —
@@ -84,3 +87,52 @@ export const saveRowSeed: SeedCallback = async (table, values, { admin }) =>
     row_id: string
   }
 
+export interface PgTestBindings extends SandboxHooks {
+  app: AppLike
+  /** Mint a session token for an existing enabled user (no password needed —
+   * bind to the server's issueSession). Needed by `admin`, `client` and
+   * `createUser`; harnesses without auth can leave it out. */
+  mintToken?(user: string): Promise<string>
+  /** Create a user through the real save lifecycle; returns its `row_id`.
+   * Called inside the sandbox, so it rolls back with the test. Needed by
+   * `client` and `createUser`. */
+  insertUser?(opts: { email: string; fullName?: string; roles: string[] }): Promise<string>
+  /** How `seed(table, values)` inserts a row. Default (0.2 behaviour): POST
+   * `/api/save_row` as the administrator — featherbase's save endpoint. */
+  seed?: SeedCallback
+  /** The administrator account name. Default: 'Administrator'. */
+  adminUser?: string
+}
+
+export type SeedFn = (
+  table: string,
+  values?: Record<string, unknown>,
+) => Promise<Record<string, unknown> & { row_id: string }>
+
+
+export type CreateUserFn = (opts?: {
+  email?: string
+  fullName?: string
+  roles?: string[]
+}) => Promise<TestClient>
+
+export interface PgTestFixtures {
+  /** The sandbox transaction handle — raw SQL access inside the test tx. */
+  db: unknown
+  /** Anonymous in-process client. */
+  api: TestClient
+  /** Administrator-authenticated client. */
+  admin: TestClient
+  /** A fresh regular user (created inside the sandbox) with the harness's
+   * default roles. */
+  client: TestClient
+  /** Insert a row through the real save lifecycle as Administrator. */
+  seed: SeedFn
+  /** Create an additional user; returns an authenticated client. */
+  createUser: CreateUserFn
+}
+
+export interface PgTestOptions {
+  /** Roles granted to `client` / `createUser()` users by default. */
+  defaultRoles?: string[]
+}

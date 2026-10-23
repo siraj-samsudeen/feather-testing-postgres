@@ -47,6 +47,9 @@ export interface PostgresFixtureValues<TDb = any> {
   sql: SqlRunner
 }
 
+/** The fixture values, as Vitest's createDbTest names its type. */
+export type DbTestFixtures<TDb = any> = PostgresFixtureValues<TDb>
+
 export interface PostgresFixtures<TDb = any> {
   dbEngine: [FixtureFn<FeatherDb<TDb>, {}>, FixtureOptions]
   testDb: [FixtureFn<TestDb<TDb>, { dbEngine: FeatherDb<TDb> }>, FixtureOptions]

@@ -39,6 +39,10 @@ Additive — every 0.2 export keeps its meaning.
   `current_database()` is checked after connecting. The driver is always
   handed the path's database explicitly (Bun.sql otherwise lets `PGDATABASE`
   override the path).
+- The bun entry and every runner-free module type-check without vitest (the
+  createPgTest types moved to `client.ts`, `DbTestFixtures` to `fixtures.ts`;
+  both still re-exported where they were). Use `customConditions: ["bun"]`
+  or the runner-free subpaths when vitest isn't installed.
 - Under Bun the root entry resolves (via a `bun` export condition) to a
   runner-free entry with no vitest import; `createPgTest`/`createDbTest` there
   throw a pointer to `feather-testing-postgres/bun`. Vitest consumers keep the

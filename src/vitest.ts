@@ -6,14 +6,9 @@
 
 import { test as base } from 'vitest'
 import type { FeatherDb, FeatherDbOptions, SqlRunner, TestDb } from './engine'
-import { postgresFixtures } from './fixtures'
+import { postgresFixtures, type DbTestFixtures } from './fixtures'
 
-export interface DbTestFixtures<TDb = any> {
-  dbEngine: FeatherDb<TDb>
-  testDb: TestDb<TDb>
-  db: TDb
-  sql: SqlRunner
-}
+export type { DbTestFixtures } from './fixtures'
 
 export function createDbTest<TDb = any>(options: FeatherDbOptions | FeatherDb<TDb> = {}) {
   // The same definitions as everywhere else; Vitest takes the Playwright shape

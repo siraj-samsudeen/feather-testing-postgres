@@ -392,6 +392,13 @@ factories), `@happy-dom/global-registrator` (component tests under bun), plus `r
 entry points. The package ships TypeScript source — Bun and Vitest transform
 it natively, so no build step is involved.
 
+**Without vitest installed** (bun test only): at runtime the root entry
+resolves to a runner-free build through the `bun` export condition. To
+type-check, either add `"customConditions": ["bun"]` to your tsconfig (the
+root entry then type-checks without vitest), or import the runner-free
+subpaths — `/bun`, `/engine`, `/fixtures`, `/drizzle` — which never need it.
+The root's default entry is the Vitest entry and needs vitest's types.
+
 ## Legacy: the 0.2 delegate API (postgres.js + Vitest)
 
 The 0.2 API is kept, unchanged: a Vitest `test` with Phoenix-style fixtures
