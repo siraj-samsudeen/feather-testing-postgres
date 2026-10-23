@@ -238,9 +238,7 @@ class Scheduler {
   }
 
   endedError(): Error {
-    return new Error(
-      "feather-testing-postgres: this test has ended — a query ran after endTest; await your app's work before the test finishes",
-    )
+    return endedError()
   }
 
   /** Throws if the test has ended. */
