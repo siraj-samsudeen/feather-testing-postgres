@@ -241,7 +241,29 @@ async function endHeld(sched: Scheduler, release: () => Promise<void>): Promise<
 
 const IN_FLIGHT_GRACE_MS = 2000
 
-/** The driver's own transaction handle, refusing use once the test ended. */
+/** A query object guarded at execution as well as creation. Bun.sql and
+ * postgres.js queries are lazy: built before endTest and awaited (or
+ * .execute()d, .values()d, ...) after it, they would run on the bare
+ * connection. Every method — whatever starts the query — checks first;
+ * methods returning the query itself keep it guarded. */
+function guardQuery<T>(q: T, sched: Scheduler): T {
+  if (!q || (typeof q !== 'object' && typeof q !== 'function')) return q
+  const proxy: any = new Proxy(q as any, {
+    get(target, prop) {
+      const v = target[prop]
+      if (typeof v !== 'function') return v
+      return (...args: unknown[]) => {
+        sched.check()
+        const r = v.apply(target, args)
+        return r === target ? proxy : r
+      }
+    },
+  })
+  return proxy
+}
+
+/** The driver's own transaction handle, refusing use once the test ended —
+ * when a query is created and again when it starts. */
 function guardRaw(handle: any, sched: Scheduler): unknown {
   return new Proxy(handle, {
     get(target, prop) {
@@ -249,12 +271,12 @@ function guardRaw(handle: any, sched: Scheduler): unknown {
       if (typeof v !== 'function') return v
       return (...args: unknown[]) => {
         sched.check()
-        return v.apply(target, args)
+        return guardQuery(v.apply(target, args), sched)
       }
     },
     apply(target, _this, args) {
       sched.check()
-      return target(...args)
+      return guardQuery(target(...args), sched)
     },
   })
 }
