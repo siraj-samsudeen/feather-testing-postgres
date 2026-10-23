@@ -31,6 +31,11 @@ export type Overrides<I, D> = Omit<I, keyof D> & Partial<I>
 
 type OverrideArgs<I, D> = {} extends Overrides<I, D> ? [overrides?: Overrides<I, D>] : [overrides: Overrides<I, D>]
 
+type PerRow<I, D> = Overrides<I, D> | ((i: number) => Overrides<I, D>)
+/** insertMany's overrides follow the same rule: required when a required
+ * column has no default, whether given once or per index. */
+type ManyArgs<I, D> = {} extends Overrides<I, D> ? [overrides?: PerRow<I, D>] : [overrides: PerRow<I, D>]
+
 export interface Factory<T extends PgTable, D> {
   readonly table: T
   /** The row insert() would write, without touching the database. */
@@ -41,7 +46,7 @@ export interface Factory<T extends PgTable, D> {
   insertMany(
     db: PgDatabase<any, any, any>,
     count: number,
-    overrides?: Overrides<T['$inferInsert'], D> | ((i: number) => Overrides<T['$inferInsert'], D>),
+    ...args: ManyArgs<T['$inferInsert'], D>
   ): Promise<T['$inferSelect'][]>
 }
 
@@ -64,7 +69,7 @@ export function factory<T extends PgTable, const D extends Defaults<T['$inferIns
       const [row] = await db.insert(table).values(build(o)).returning()
       return row
     }) as Factory<T, D>['insert'],
-    async insertMany(db, count, overrides) {
+    async insertMany(db, count, ...[overrides]) {
       if (count <= 0) return []
       const rows = Array.from({ length: count }, (_, i) =>
         build(typeof overrides === 'function' ? overrides(i) : overrides),

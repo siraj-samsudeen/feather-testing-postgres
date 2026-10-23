@@ -43,6 +43,13 @@ export function factoryContract({ describe, test, expect, beforeAll, afterAll, b
       expect(typeof built.email).toBe('string')
     })
 
+    test('insertMany() takes required columns from per-index overrides', async () => {
+      const rows = await todoFactory.insertMany(t.db, 2, (i) => ({ title: `todo ${i}` }))
+      expect(rows.map((r) => r.title)).toEqual(['todo 0', 'todo 1'])
+      const same = await todoFactory.insertMany(t.db, 2, { title: 'same' })
+      expect(same.map((r) => r.title)).toEqual(['same', 'same'])
+    })
+
     test('factory rows roll back with the test', async () => {
       const rows = await t.sql<{ n: number }>`select count(*)::int as n from users`
       expect(rows[0].n).toBe(0)
@@ -52,3 +59,8 @@ export function factoryContract({ describe, test, expect, beforeAll, afterAll, b
 
 // @ts-expect-error — title has no default, so overrides are required
 void (() => todoFactory.insert(null as any))
+
+// @ts-expect-error — insertMany needs the overrides too when a required column has no default
+void (() => todoFactory.insertMany(null as any, 2))
+// @ts-expect-error — ...and per-index overrides must supply it as well
+void (() => todoFactory.insertMany(null as any, 2, () => ({ done: true })))
