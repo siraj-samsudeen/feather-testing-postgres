@@ -52,7 +52,14 @@ export function postgresFixtures<TDb = any>(
       scope: 'file',
       async setup() {
         const fdb = isFeatherDb(options) ? options : createFeatherDb<TDb>(options)
-        await fdb.start()
+        try {
+          await fdb.start()
+        } catch (e) {
+          // A failed migration or setup must not leak the engine (a PGlite
+          // instance, a pooled connection, a template database).
+          await fdb.close().catch(() => {})
+          throw e
+        }
         return fdb
       },
       teardown: (fdb) => fdb.close(),
