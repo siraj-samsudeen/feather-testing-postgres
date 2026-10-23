@@ -54,6 +54,10 @@ export interface FeatherDbOptions {
   setup?: (sql: SqlRunner) => unknown | Promise<unknown>
   /** Passed to drizzle(), enabling `db.query.<table>`. */
   schema?: Record<string, unknown>
+  /** How long endTest() lets app transactions still running settle inside
+   * the test transaction before rolling it back (default 2000 ms). Past it,
+   * the Postgres engine destroys that connection rather than reuse it. */
+  endTestGraceMs?: number
   /** PGlite constructor options, e.g. `{ extensions: { vector } }`. Extensions
    * must be imported as PGlite modules; `CREATE EXTENSION` alone is not enough. */
   pglite?: Record<string, unknown>
@@ -91,9 +95,14 @@ export interface FeatherDb<TDb = any> {
 // Driver adapters: one small interface over Bun.sql, postgres.js and PGlite.
 
 interface Conn {
+  /** Called on each new pool (drizzle's postgres-js parsers live on it). */
+  prepare?: (client: unknown) => void
+  /** Replace the pool and start closing the old one (Postgres only); the
+   * returned promise settles when the old pool is closed. */
+  retire?: () => { closed: Promise<void> }
   sql: SqlRunner
   /** Runs fn in a transaction that the caller controls through `release`. */
-  hold(): Promise<{ tx: unknown; client: unknown; sql: SqlRunner; sched: Scheduler; release(): Promise<void> }>
+  hold(graceMs: number): Promise<{ tx: unknown; client: unknown; sql: SqlRunner; sched: Scheduler; release(): Promise<void> }>
   /** The client drizzle should be built over when no test transaction is held. */
   client: unknown
   kind: 'bun' | 'postgres-js' | 'pglite'
@@ -222,24 +231,36 @@ class Scheduler {
  * back inside the still-open test transaction rather than on the bare
  * connection), then roll the test transaction back. The wait is bounded so
  * app code that never settles cannot hang endTest(). */
-async function endHeld(sched: Scheduler, release: () => Promise<void>): Promise<void> {
+async function endHeld(
+  sched: Scheduler,
+  release: () => Promise<void>,
+  graceMs: number,
+  retire?: () => { closed: Promise<void> },
+): Promise<void> {
   sched.ended = true
   let timer: ReturnType<typeof setTimeout> | undefined
-  await Promise.race([
-    sched.root.tail,
-    new Promise((r) => {
-      timer = setTimeout(r, IN_FLIGHT_GRACE_MS)
+  const settled = await Promise.race([
+    sched.root.tail.then(() => true),
+    new Promise<boolean>((r) => {
+      timer = setTimeout(() => r(false), graceMs)
     }),
   ])
   clearTimeout(timer)
   try {
-    await release()
+    if (!settled && retire) {
+      // Still suspended app work would later send its own savepoint cleanup
+      // on this connection — by then possibly the next test's. Destroy the
+      // connection instead of handing it back (the server rolls back).
+      const { closed } = retire()
+      await release().catch(() => {})
+      await closed
+    } else await release()
   } finally {
     sched.closed = true
   }
 }
 
-const IN_FLIGHT_GRACE_MS = 2000
+const DEFAULT_END_TEST_GRACE_MS = 2000
 
 /** A query object guarded at execution as well as creation. Bun.sql and
  * postgres.js queries are lazy: built before endTest and awaited (or
@@ -403,35 +424,53 @@ function savepointingPgliteTx(tx: any, sched: Scheduler): unknown {
 const optionalPeer = (name: string): Promise<any> => import(/* @vite-ignore */ name)
 
 async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Promise<Conn> {
-  let root: any
+  let make: () => any
   if (driver === 'bun') {
     const Bun = (globalThis as any).Bun
     if (!Bun?.SQL) throw new Error("feather-testing-postgres: driver 'bun' needs the Bun runtime; use driver 'postgres-js' under Node")
-    root = new Bun.SQL(url, { max })
+    make = () => new Bun.SQL(url, { max })
   } else {
     const postgres = (await optionalPeer('postgres')).default
-    root = postgres(url, { max, onnotice: () => {} })
+    make = () => postgres(url, { max, onnotice: () => {} })
   }
-  return {
+  const end = (pool: any, timeout: number) => (driver === 'bun' ? pool.close({ timeout }) : pool.end({ timeout }))
+  let root = make()
+  const conn: Conn = {
     kind: driver,
-    client: root,
-    sql: taggedSql(root),
-    async hold() {
-      const { tx, release } = await holdOpen((fn) => root.begin(fn))
+    get client() {
+      return root
+    },
+    get sql() {
+      return taggedSql(root)
+    },
+    async hold(graceMs) {
+      const pool = root
+      const { tx, release } = await holdOpen((fn) => pool.begin(fn))
       const sched = new Scheduler()
       return {
         tx: guardRaw(tx, sched),
-        client: savepointingTaggedTx(tx, root, sched),
+        client: savepointingTaggedTx(tx, pool, sched),
         sql: taggedSql(tx, sched),
         sched,
-        release: () => endHeld(sched, release),
+        release: () => endHeld(sched, release, graceMs, () => conn.retire!()),
       }
     },
+    /** Replaces the pool, destroying its connections: an app transaction still
+     * suspended on one can never send its ROLLBACK TO / RELEASE into a
+     * connection the next test reuses. */
+    retire() {
+      const old = root
+      root = make()
+      conn.prepare?.(root)
+      // postgres.js closes at once; Bun.sql waits for the held transaction,
+      // so the caller rolls it back before awaiting this
+      return { closed: Promise.resolve(end(old, 0)).then(() => {}, () => {}) }
+    },
     async close() {
-      if (driver === 'bun') await root.close()
-      else await root.end({ timeout: 5 })
+      await end(root, 5)
     },
   }
+  return conn
 }
 
 async function bootPglite(options: Record<string, unknown> = {}): Promise<Conn & { pg: any }> {
@@ -448,7 +487,7 @@ async function bootPglite(options: Record<string, unknown> = {}): Promise<Conn &
     pg,
     client: pg,
     sql: pgliteSql(pg),
-    async hold() {
+    async hold(graceMs) {
       const { tx, release } = await holdOpen((fn) => pg.transaction(fn))
       const sched = new Scheduler()
       return {
@@ -456,7 +495,7 @@ async function bootPglite(options: Record<string, unknown> = {}): Promise<Conn &
         client: savepointingPgliteTx(tx, sched),
         sql: pgliteSql(tx, sched),
         sched,
-        release: () => endHeld(sched, release),
+        release: () => endHeld(sched, release, graceMs),
       }
     },
     close: () => pg.close(),
@@ -645,7 +684,8 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       drz = await loadDrizzle('pglite')
     } else {
       const u = requireUrl()
-      if (strategy === 'tx') conn = await connectPostgres(u, driver)
+      // tx needs one connection: every test query runs on its transaction
+      if (strategy === 'tx') conn = await connectPostgres(u, driver, 1)
       else {
         admin = await connectPostgres(u, driver, 1)
         templateName = `feather_tpl_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}`
@@ -655,7 +695,11 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       drz = await loadDrizzle(driver)
       // postgres-js: drizzle() configures the root client's parsers once, so
       // test transactions (which share them) parse dates/json the same way.
-      if (drz && conn) drz.drizzle({ client: conn.client })
+      if (drz && conn) {
+        const d = drz
+        conn.prepare = (client) => d.drizzle({ client })
+        conn.prepare(conn.client)
+      }
     }
     const folders = [...(options.migrations ? [options.migrations] : [])]
     await onTarget(async (c) => {
@@ -702,7 +746,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       try {
         await self.start()
         if (strategy === 'tx') {
-          const h = await conn!.hold()
+          const h = await conn!.hold(options.endTestGraceMs ?? DEFAULT_END_TEST_GRACE_MS)
           end = h.release
           return { db: drz ? serialisingDrizzle(makeDb(h.client), h.sched) : makeDb(h.client), sql: h.sql, raw: h.tx }
         }

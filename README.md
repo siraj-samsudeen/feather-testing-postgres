@@ -114,9 +114,12 @@ the transaction whose callback issued it. `raw` is not serialised.
 reject every query — issued late or still queued — with "this test has ended
 — a query ran after endTest; await your app's work before the test finishes"
 (drizzle wraps it as the `cause` of its query error). App transactions still
-in flight get up to 2 s to settle inside the test transaction before it rolls
-back, so nothing reaches the bare connection (where postgres.js would
-autocommit). (Elysia's `handle` needs a
+in flight get up to 2 s (`endTestGraceMs`) to settle inside the test
+transaction before it rolls back, so nothing reaches the bare connection
+(where postgres.js would autocommit). If they still haven't settled, the
+Postgres engine destroys that connection and opens a fresh one rather than
+hand it to the next test. Lazy `raw` queries are checked when they start,
+not only when built. (Elysia's `handle` needs a
 URL whose host is at least as long as `localhost`; `http://app/x` misroutes.)
 
 ### The API

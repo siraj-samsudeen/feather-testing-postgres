@@ -16,3 +16,5 @@ abandonedDatabasesContract({ describe, test, expect, beforeAll, afterAll, before
 templateNamesContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { migrateOnceContract } from '../contract/migrate-once.contract'
 migrateOnceContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { graceTimeoutContract } from '../contract/grace-timeout.contract'
+graceTimeoutContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
