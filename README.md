@@ -110,8 +110,7 @@ queued when it fails are cancelled with a clear error); a plain query through
 `db` or `sql` waits for transactions open outside it, and runs at once inside
 the transaction whose callback issued it. `raw` follows the same rules:
 `raw.savepoint`/`raw.begin` queue like app transactions and raw queries like
-`sql`. A raw cursor still open when the test ends is closed (within
-`endTestGraceMs`, else its connection is retired).
+`sql`.
 
 **Nothing outlives the test.** Once `endTest()` begins, `db`, `sql` and `raw`
 reject every query — issued late or still queued — with "this test has ended
@@ -159,9 +158,10 @@ transaction; `raw` is a small raw-SQL facade (below).
 | `` raw`select … ${v}` `` | A query; interpolated values are bound parameters. Resolves to plain row objects. |
 | `raw.unsafe(text, params?)` | A query from SQL built at runtime. |
 | `raw.savepoint(fn)` / `raw.begin(fn)` | Runs `fn(child)` in a SAVEPOINT (a real transaction on a `clone` database): kept if it resolves, rolled back if it throws. `child` is another `raw`. Inside a test the transaction is already open, so `begin` is a savepoint too. |
-| `raw.cursor(text, params?, batchSize?)` | postgres.js only: an async iterable of row batches. |
 
 Every member checks that the test is still open, and results are plain data.
+Batched reads (cursors) are not offered: test data is small — page with
+`LIMIT`/`OFFSET` instead.
 **Driver features beyond this list are not available in tests, by design.**
 A driver handle is full of executables (lazy queries, cursors, child handles
 passed to callbacks, bound copies) and every proxy we put around one leaked

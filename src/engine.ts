@@ -71,7 +71,7 @@ export interface TestDb<TDb = any> {
   /** Raw SQL on the same transaction/database as `db`. */
   sql: SqlRunner
   /** Raw SQL through a frozen facade (never a driver object): raw`...`,
-   * unsafe, savepoint/begin, and cursor on postgres.js. See RawSql. */
+   * unsafe and savepoint/begin. See RawSql. */
   raw: RawSql
 }
 
@@ -205,15 +205,6 @@ class Scheduler {
    * endTest waits for them like app transactions. */
   readonly rawOpen = new Set<Promise<unknown>>()
 
-  /** Raw cursors opened and not yet finished: closed when the test ends (an
-   * abandoned one holds the connection, and the rollback would queue behind it). */
-  readonly cursors = new Set<() => Promise<unknown>>()
-
-  trackCursor(close: () => Promise<unknown>): () => void {
-    this.cursors.add(close)
-    return () => this.cursors.delete(close)
-  }
-
   track(work: Promise<unknown>): void {
     const settled = work.then(
       () => {},
@@ -259,16 +250,9 @@ async function endHeld(
   retire?: () => { closed: Promise<void> },
 ): Promise<void> {
   sched.ended = true
-  // close raw cursors still open (abandoned mid-way, they hold the connection)
-  const closingCursors = [...sched.cursors].map((close) =>
-    Promise.resolve()
-      .then(close)
-      .catch(() => {}),
-  )
-  sched.cursors.clear()
   let timer: ReturnType<typeof setTimeout> | undefined
   const settled = await Promise.race([
-    Promise.all([sched.root.tail, ...sched.rawOpen, ...closingCursors]).then(() => true),
+    Promise.all([sched.root.tail, ...sched.rawOpen]).then(() => true),
     new Promise<boolean>((r) => {
       timer = setTimeout(() => r(false), graceMs)
     }),
@@ -307,8 +291,6 @@ export interface RawSql {
   savepoint<T>(fn: (raw: RawSql) => T | Promise<T>): Promise<T>
   /** Same as savepoint: inside a test, the transaction is already open. */
   begin<T>(fn: (raw: RawSql) => T | Promise<T>): Promise<T>
-  /** postgres.js only: rows in batches of batchSize (default 1). */
-  cursor?<T = Row>(text: string, params?: unknown[], batchSize?: number): AsyncIterable<T[]>
 }
 
 /** How a facade reaches a driver (internal, never exposed). */
@@ -316,7 +298,6 @@ interface RawPort {
   query(text: string, params: unknown[]): Promise<Row[]>
   /** Pool-like ports (a clone's pool or PGlite instance) open a real transaction. */
   begin?<T>(fn: (port: RawPort) => Promise<T>): Promise<T>
-  cursor?(text: string, params: unknown[], batchSize: number): AsyncIterable<Row[]>
 }
 
 /** What a facade checks: new work refused once ended; savepoint cleanup
@@ -325,8 +306,6 @@ interface RawGate {
   check(): void
   readonly closed: boolean
   track(work: Promise<unknown>): void
-  /** Registers an open cursor's closer for teardown; returns the unregister. */
-  trackCursor?(close: () => Promise<unknown>): () => void
 }
 
 const plainRows = (rows: Iterable<unknown>): Row[] => Array.from(rows, (r) => ({ ...(r as Row) }))
@@ -335,10 +314,6 @@ function taggedPort(handle: any, driver: PostgresDriver, pool: boolean): RawPort
   return {
     query: async (text, params) => plainRows(await handle.unsafe(text, params)),
     begin: pool ? (fn) => handle.begin((h: any) => fn(taggedPort(h, driver, false))) : undefined,
-    cursor:
-      driver === 'postgres-js'
-        ? (text, params, batchSize) => handle.unsafe(text, params).cursor(batchSize)
-        : undefined,
   }
 }
 
@@ -449,39 +424,6 @@ function rawFacade(port: RawPort, gate: RawGate, inTransaction: boolean, names =
     unsafe: (text: string, params: unknown[] = []) => run(text, params),
     savepoint,
     begin: savepoint,
-  }
-  if (port.cursor) {
-    const open = port.cursor.bind(port)
-    methods.cursor = (text: string, params: unknown[] = [], batchSize = 1) =>
-      Object.freeze({
-        [Symbol.asyncIterator]() {
-          let it: AsyncIterator<Row[]> | undefined
-          let untrack: (() => void) | undefined
-          const finish = async () => {
-            untrack?.()
-            await it?.return?.()
-          }
-          return Object.freeze({
-            async next(): Promise<IteratorResult<Row[]>> {
-              gate.check()
-              if (!it) {
-                it = open(text, params, batchSize)[Symbol.asyncIterator]()
-                // an abandoned cursor holds the connection: endTest closes it
-                untrack = gate.trackCursor?.(async () => {
-                  await it?.return?.()
-                })
-              }
-              const r = await it.next()
-              if (r.done) untrack?.()
-              return r.done ? { done: true, value: undefined } : { done: false, value: plainRows(r.value) }
-            },
-            async return(): Promise<IteratorResult<Row[]>> {
-              await finish()
-              return { done: true, value: undefined }
-            },
-          })
-        },
-      })
   }
   for (const [k, f] of Object.entries(methods)) Object.defineProperty(facade, k, { value: Object.freeze(f), enumerable: true })
   return Object.freeze(facade) as unknown as RawSql

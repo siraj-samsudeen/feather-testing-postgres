@@ -1,5 +1,5 @@
 // `raw` is a frozen facade of our own, never a driver object: a fixed API
-// (raw`...`, unsafe, savepoint, begin, and cursor on postgres.js) whose every
+// (raw`...`, unsafe, savepoint, begin — no cursor) whose every
 // method checks the end-of-test guard, returns plain data, and hands callbacks
 // another facade. These tests try every reflection path a test could use to
 // reach a driver object or run a query after endTest.
@@ -54,41 +54,13 @@ export function rawFacadeContract({ describe, test, expect }: RunnerApi) {
           ).rejects.toThrow('app failure')
           expect((await raw<{ title: string }>`select title from todos`).map((r) => r.title)).toEqual(['kept'])
 
-          if (v.driver === 'postgres-js') {
-            const batches: number[][] = []
-            for await (const batch of raw.cursor!<{ g: number }>('select generate_series(1, 5) as g', [], 2))
-              batches.push(batch.map((r) => r.g))
-            expect(batches).toEqual([[1, 2], [3, 4], [5]])
-          } else expect(raw.cursor).toBeUndefined()
+          // batched reads are not offered (removed by the author's decision)
+          expect((raw as any).cursor).toBeUndefined()
           await fdb.endTest()
         } finally {
           await fdb.close()
         }
       }, 30_000)
-
-      if (v.driver === 'postgres-js')
-        test(`an abandoned cursor does not hang endTest; the next test is isolated (${v.label})`, async () => {
-          const grace = 500
-          const fdb = engine(v, { endTestGraceMs: grace })
-          try {
-            const t = await fdb.beginTest()
-            const raw = t.raw as RawSql
-            await raw`insert into todos (title) values ('this test only')`
-            const it = raw.cursor!('select generate_series(1, 10) as g', [], 1)[Symbol.asyncIterator]()
-            expect((await it.next()).value).toEqual([{ g: 1 }]) // one batch read, then abandoned
-            const started = performance.now()
-            await fdb.endTest()
-            expect(performance.now() - started).toBeLessThan(grace + 1000)
-
-            const next = await fdb.beginTest()
-            await next.raw`insert into todos (title) values ('next test')`
-            const titles = (await next.raw<{ title: string }>`select title from todos`).map((r) => r.title)
-            expect(titles).toEqual(['next test'])
-            await fdb.endTest()
-          } finally {
-            await fdb.close()
-          }
-        }, 10_000)
 
       test(`no driver object is reachable from a facade by reflection (${v.label})`, async () => {
         const fdb = engine(v)
@@ -99,6 +71,7 @@ export function rawFacadeContract({ describe, test, expect }: RunnerApi) {
           await raw.savepoint(async (c) => {
             child = c
           })
+          for (const f of [raw, child]) expect((f as any).cursor).toBeUndefined()
           const ours = new Set<object>()
           for (const f of [raw, child]) {
             ours.add(f)
@@ -111,7 +84,7 @@ export function rawFacadeContract({ describe, test, expect }: RunnerApi) {
           expect(foreign).toEqual([])
           // and our own functions expose nothing but name/length
           for (const f of ours)
-            for (const k of Reflect.ownKeys(f)) expect(['length', 'name', 'unsafe', 'savepoint', 'begin', 'cursor']).toContain(k)
+            for (const k of Reflect.ownKeys(f)) expect(['length', 'name', 'unsafe', 'savepoint', 'begin']).toContain(k)
           await fdb.endTest()
         } finally {
           await fdb.close()
@@ -144,10 +117,7 @@ export function rawFacadeContract({ describe, test, expect }: RunnerApi) {
           kept.symbolValues = Reflect.ownKeys(raw)
             .filter((k) => typeof k === 'symbol')
             .map((k) => (raw as any)[k])
-          if (raw.cursor) {
-            kept.cursor = raw.cursor("insert into todos (title) values ('cursor') returning id")
-            kept.iterator = raw.cursor("insert into todos (title) values ('iterator') returning id")[Symbol.asyncIterator]()
-          }
+          expect((raw as any).cursor).toBeUndefined()
           // a savepoint suspended across the end, writing when it resumes
           let resume!: () => void
           const paused = new Promise<void>((r) => (resume = r))
@@ -185,12 +155,6 @@ export function rawFacadeContract({ describe, test, expect }: RunnerApi) {
             viaCall: await refused(() => kept.child.call(null, tpl`insert into todos (title) values ('call')`)),
             viaApplyCall: await refused(() => kept.child.apply(null, [tpl`insert into todos (title) values ('apply')`])),
             lateWrite: await lateWriteOutcome,
-          }
-          if (kept.cursor) {
-            outcomes.cursor = await refused(async () => {
-              for await (const _ of kept.cursor) void _
-            })
-            outcomes.iterator = await refused(() => kept.iterator.next())
           }
           for (const [form, o] of Object.entries(outcomes)) expect([form, o]).toEqual([form, expect.stringMatching(ENDED)])
           expect(await suspended).not.toBe('ran')

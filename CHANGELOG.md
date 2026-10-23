@@ -14,17 +14,20 @@ Additive — every 0.2 export keeps its meaning.
   the driver handle.
 - Under `tx`, `raw` is serialised with `db` and `sql`: raw savepoints queue like
   app transactions, so a concurrent write never lands inside (and vanishes
-  with) a raw savepoint; raw cursors still open at `endTest` are closed.
+  with) a raw savepoint.
   `db.$client` is an adapter of our own (like `raw`), not the driver's client.
+- `raw.cursor` removed (author's decision): cursors bypassed the scheduler and
+  could hang teardown; may return later as its own issue.
 - **`raw` is a facade, decided by the author after repeated proxy escapes.**
   `TestDb.raw` is a frozen object of our own (`` raw`…` ``, `unsafe`,
-  `savepoint`/`begin`, and `cursor` on postgres.js), not the driver's handle.
+  `savepoint`/`begin`), not the driver's handle.
   Successive review rounds found driver objects escaping every proxy guard
   (lazy queries, cursors, callback handles, `bind`, descriptor reads) and
   running SQL after the test ended; a facade exposes no driver object at all.
   Driver features beyond that list are not available through `raw`.
-- **Fixtures**: `postgresFixtures()` (plain `{ scope, deps, setup, teardown }`
-  definitions), `useFixtures()`; bun:test helpers `sandboxEach()` /
+- **Fixtures**: `postgresFixtures()` (definitions in feather-testing-core's
+  Playwright-style shape, `[async (deps, use) => …, { scope, deps }]`),
+  `useFixtures()`; bun:test helpers `sandboxEach()` /
   `useBunFixtures()` (`/bun`); Vitest `createDbTest()` (`/vitest`).
 - `cleanupStale({ olderThan, url? })`: explicit cleanup of databases left by
   crashed `clone` runs (nothing is dropped automatically).
