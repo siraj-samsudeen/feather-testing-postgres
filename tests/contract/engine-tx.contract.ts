@@ -76,6 +76,10 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
       expect(n).toBe(1)
     })
 
+    test('refuses a second open test (sequential tests only)', async () => {
+      await expect(fdb.beginTest()).rejects.toThrow(/sequentially/)
+    })
+
     test('migrateOnce is idempotent', async () => {
       await fdb.migrateOnce(MIGRATIONS)
       const [{ n }] = await t.sql<{ n: number }>`select count(*)::int as n from users`

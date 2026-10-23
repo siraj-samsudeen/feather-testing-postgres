@@ -126,3 +126,48 @@ export async function rendersTheApp(as: TestClient) {
     if (e instanceof StepError) void e.message
   }
 }
+
+// --- 0.3 surface: engines, fixtures, runner helpers, factories -------------
+import {
+  createFeatherDb,
+  createDbTest,
+  postgresFixtures,
+  saveRowSeed,
+  useFixtures,
+  type FeatherDb,
+  type FixtureDef,
+  type SeedCallback,
+  type SqlRunner,
+  type TestDb,
+} from '../../src/index'
+import { factory, seq, type FeatherDrizzleDb } from '../../src/drizzle'
+
+const fdb: FeatherDb = createFeatherDb({ engine: 'pglite', strategy: 'clone', migrations: './drizzle' })
+async function engineSurface() {
+  await fdb.start()
+  const t: TestDb = await fdb.beginTest()
+  const rows: { n: number }[] = await (t.sql as SqlRunner)<{ n: number }>`select 1 as n`
+  void rows
+  await fdb.endTest()
+  await fdb.close()
+}
+void engineSurface
+const defs = postgresFixtures(fdb)
+const scope: 'file' = defs.dbEngine.scope as 'file'
+void scope
+const appDef: FixtureDef<{ db: FeatherDrizzleDb }, { db: FeatherDrizzleDb }> = {
+  scope: 'test',
+  deps: ['db'],
+  setup: ({ db }) => ({ db }),
+}
+void appDef
+void useFixtures
+void createDbTest
+const ownSeed: SeedCallback = async (_table, _values, { admin }) => {
+  await admin()
+  return { row_id: 'x' }
+}
+const seeded: PgTestBindings = { ...bindings, seed: ownSeed ?? saveRowSeed }
+void seeded
+void factory
+void seq
