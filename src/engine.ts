@@ -302,6 +302,28 @@ function withDatabase(url: string, name: string): string {
 
 let cloneSeq = 0
 
+function pidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM' // exists, not ours to signal
+  }
+}
+
+/** Drops feather_tpl_<pid>_* / feather_t_<pid>_* databases left by crashed
+ * runs: only our own prefixes, only when that pid is no longer running here,
+ * and never forced — a database anyone is still connected to stays. */
+async function dropAbandoned(sql: SqlRunner): Promise<void> {
+  const rows = await sql<{ datname: string }>`
+    select datname from pg_database where datname ~ '^feather_(tpl|t)_[0-9]+_'`
+  for (const { datname } of rows) {
+    const pid = Number(/^feather_(?:tpl|t)_(\d+)_/.exec(datname)![1])
+    if (pid === process.pid || pidRunning(pid)) continue
+    await sql.unsafe(`drop database if exists "${datname.replace(/"/g, '""')}"`).catch(() => {})
+  }
+}
+
 export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): FeatherDb<TDb> {
   const engine = (options.engine ?? (process.env.FEATHER_DB as EngineName | undefined) ?? 'pglite') as EngineName
   if (engine !== 'pglite' && engine !== 'postgres')
@@ -373,6 +395,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
         templateName = `feather_tpl_${process.pid}_${Date.now().toString(36)}`
         await admin.sql.unsafe(`create database "${templateName}"`)
       }
+      await dropAbandoned((conn ?? admin)!.sql)
       drz = await loadDrizzle(driver)
       // postgres-js: drizzle() configures the root client's parsers once, so
       // test transactions (which share them) parse dates/json the same way.

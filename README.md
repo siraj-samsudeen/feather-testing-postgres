@@ -405,4 +405,8 @@ npm run test:bun:postgres
 `tests/contract/` holds suites written once and run by both runners
 (`tests/bun/`, `tests/vitest/`). Never point `DATABASE_URL` at a database you
 care about — the suites create and drop tables in it, and `clone` creates and
-drops `feather_tpl_*` / `feather_t_*` databases next to it.
+drops `feather_tpl_<pid>_*` / `feather_t_<pid>_*` databases next to it. A
+crashed run's leftovers are dropped by the next `start()` on that server: only
+those prefixes, only when the pid is not running on this machine, and never
+forced, so a database anyone is still connected to stays. (Runs on other hosts
+sharing the server are checked by pid on this host, hence the no-force rule.)

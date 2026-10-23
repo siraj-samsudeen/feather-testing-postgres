@@ -12,3 +12,5 @@ import { oneTestAtATimeContract } from '../contract/one-test-at-a-time.contract'
 oneTestAtATimeContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { failedStartContract } from '../contract/failed-start.contract'
 failedStartContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { abandonedDatabasesContract } from '../contract/abandoned-databases.contract'
+abandonedDatabasesContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
