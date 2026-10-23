@@ -1,51 +1,105 @@
 # feather-testing-postgres
 
-> Sibling of [feather-testing-convex](https://github.com/siraj-samsudeen/feather-testing-convex) for
-> React + Hono + Postgres stacks. Extracted from
-> [featherbase](https://github.com/siraj-samsudeen/featherbase) (developed under
-> the working name frappe-clone), where it is exercised by a 320-test server
-> suite and a 10-test component suite.
+Phoenix-style SQL Sandbox testing for Postgres apps: every test runs against
+the real database — on PGlite in-process (nothing to install) or a real
+Postgres server — and leaves no trace. The app takes its database by
+injection, so tests drive the production code path with no mocks and no
+cleanup code. Runs under `bun test` or Vitest.
 
-### How do you test a React component that talks to a Postgres-backed server?
+> Sibling of [feather-testing-convex](https://github.com/siraj-samsudeen/feather-testing-convex).
+> Extracted from [featherbase](https://github.com/siraj-samsudeen/featherbase),
+> whose 320-test suite uses the 0.2 API (see [Legacy](#legacy-the-02-delegate-api-postgresjs--vitest)).
 
-| Approach | Tests backend logic | Tests component rendering | Tests the integration | Fast | Isolated |
-|----------|:---:|:---:|:---:|:---:|:---:|
-| Server-only (HTTP tests + manual cleanup) | ✅ | ❌ | ❌ | ✅ | ❌ |
-| Component with mocks (`vi.mock`/MSW) | ❌ | ✅ | ❌ | ✅ | ✅ |
-| E2E (Playwright) | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **This library** | **✅** | **✅** | **✅** | **✅** | **✅** |
+## Quick start: Bun + Elysia + Drizzle
 
-Inspired by **Phoenix**: Ecto's SQL Sandbox runs every test inside a real
-database transaction that is rolled back at the end, so tests are fast,
-perfectly isolated, and exercise the production code path — no mocks, no
-fixtures files, no cleanup code. This library brings that model to a
-React + Hono + Postgres stack (and pairs it with the MECE component-testing
-philosophy of
-[feather-testing-convex](https://github.com/siraj-samsudeen/feather-testing-convex)).
+```bash
+bun add -d feather-testing-postgres @electric-sql/pglite drizzle-orm@0.45 drizzle-kit
+```
 
-## How it works
+The schema, and its migrations (`bunx drizzle-kit generate` with this config
+writes `./drizzle`):
 
-1. **SQL sandbox** — the app exports its postgres.js handle through a
-   delegating proxy (`_setSqlDelegate` seam). `withSandbox` opens a real
-   transaction, swaps the delegate, runs the test, and ALWAYS rolls back.
-   While sandboxed, the app's own `sql.begin(...)` calls become
-   `SAVEPOINT`s — the app still gets atomic "transactions" (aborted saves
-   roll back to the savepoint), but nothing ever commits.
-2. **In-process server** — under `NODE_ENV=test` the Hono `app` binds no
-   port; requests dispatch via `app.request(path, init)`. Auth is real
-   (JWT), users are real rows — created inside the sandbox.
-3. **Fetch bridge (component tests)** — `installFetchBridge(app)` patches
-   jsdom's `fetch` so the app's own api client (`fetch('/api/...')`) lands
-   on the in-process server. `renderApp(path)` mounts the REAL route tree
-   on a memory history with a fresh QueryClient: component → fetch → Hono →
-   sandboxed Postgres, end to end, in milliseconds.
+```ts
+// src/schema.ts
+import { pgTable, serial, text } from 'drizzle-orm/pg-core'
+
+export const todos = pgTable('todos', {
+  id: serial('id').primaryKey(),
+  title: text('title').notNull(),
+})
+```
+
+```ts
+// drizzle.config.ts
+import { defineConfig } from 'drizzle-kit'
+
+export default defineConfig({ dialect: 'postgresql', schema: './src/schema.ts', out: './drizzle' })
+```
+
+The app takes its database — production passes `drizzle(...)`, tests pass the
+test's handle:
+
+```ts
+// src/app.ts
+import { Elysia, t } from 'elysia'
+import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core'
+import * as schema from './schema'
+
+export type Db = PgDatabase<PgQueryResultHKT, typeof schema>
+
+// The app takes its database: production passes drizzle(...), tests the test's handle.
+export function createApp({ db }: { db: Db }) {
+  return new Elysia()
+    .get('/todos', () => db.select().from(schema.todos))
+    .post('/todos', async ({ body }) => {
+      const [todo] = await db.insert(schema.todos).values({ title: body.title }).returning()
+      return todo
+    }, { body: t.Object({ title: t.String() }) })
+}
+```
+
+```ts
+// test/todos.test.ts
+import { expect, test } from 'bun:test'
+import { sandboxEach } from 'feather-testing-postgres/bun'
+import { createApp, type Db } from '../src/app'
+import * as schema from '../src/schema'
+
+// PGlite by default; FEATHER_DB=postgres uses a real server (see "Which database")
+const t = sandboxEach<Db>({ schema, migrations: './drizzle' })
+
+test('adds a todo', async () => {
+  const app = createApp({ db: t.db })
+  const res = await app.handle(
+    new Request('http://localhost/todos', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Buy milk' }),
+    }),
+  )
+  expect(res.status).toBe(200)
+  expect((await t.db.select().from(schema.todos)).map((r) => r.title)).toEqual(['Buy milk'])
+})
+
+test('each test starts clean', async () => {
+  expect(await t.db.select().from(schema.todos)).toEqual([])
+})
+```
+
+`bun test` runs it on PGlite. For a real server:
+`FEATHER_DB=postgres FEATHER_DATABASE_URL=postgres://localhost/app_test bun test`
+— the engine only accepts a database meant for tests (see
+[Which database](#which-database-postgres-engine)). `sandboxEach<Db>` types
+`t.db` from your schema (`FeatherDrizzleDb<typeof schema>` from
+`feather-testing-postgres/drizzle` works too, as does `createFeatherDb<…>` /
+`createDbTest<…>`).
 
 ## Engines and strategies (Bun.sql, postgres.js, PGlite)
 
 Two setups are supported side by side:
 
-- **postgres.js + Vitest with a delegate seam** — the 0.2 API below
-  (`createPgTest`, `withSandbox`), unchanged. featherbase uses it.
+- **postgres.js + Vitest with a delegate seam** — the 0.2 API, unchanged
+  (`createPgTest`, `withSandbox`; see [Legacy](#legacy-the-02-delegate-api-postgresjs--vitest)). featherbase uses it.
 - **Injection, any runner** — the app takes its database as an argument
   (`createApp({ db })`) and the test hands it a Drizzle handle bound to the
   test's transaction. No global delegate, no SQL proxy. Runs under `bun test`
@@ -72,7 +126,7 @@ test database (`test` as a word part: `app_test`, `test_db`, `my-test-db`),
 or with `allowAnyDatabase: true`. Anything else is refused before connecting,
 naming the database. `resolveTestDatabaseUrl(options?)` applies the same rule.
 
-### The injection contract (Elysia)
+### More on the injection contract (Elysia)
 
 ```ts
 // src/app.ts — production passes the real db; tests pass the test's handle
@@ -254,14 +308,121 @@ So **CI runs a real-Postgres lane pinned to production's major version**
 (`FEATHER_DB=postgres`, e.g. a `postgres:17` service) alongside the PGlite
 lane; this repo's own CI does exactly that.
 
-### Component tests under bun
+## Component tests (React)
+
+The `/react` entry renders the app's real route tree with every `fetch`
+dispatched in-process to the app (`installFetchBridge`, `renderApp`,
+`renderSession`), and `/session` adds the fluent Session DSL.
+
+### Under bun
 
 The `/react` entry runs under `bun test` with happy-dom: preload
 `feather-testing-postgres/happy-dom` (bunfig `[test] preload`, or
 `bun test --preload`). It registers happy-dom's DOM globals but keeps Bun's
 own `fetch`/`Request`/`Response`. Vitest keeps `environment: 'jsdom'`.
 
-## Quick start (server test, postgres.js + Vitest)
+### Session DSL
+
+`renderSession(path, client)` returns `{ session }` — a fluent, chainable
+driver. Methods queue; `await` executes the chain.
+
+The DSL itself is
+[feather-testing-core](https://github.com/siraj-samsudeen/feather-testing-core):
+this package contributes the DOM adapter, so the same vocabulary drives a
+component test here and a Playwright E2E test there. Every core verb is
+available — `fillIn`, `selectOption`, `check`/`uncheck`/`choose`, `click`,
+`clickButton`, `clickLink`, `submit`, `upload`, `dropFile`, `assertText`,
+`refuteText`, `assertValue`, `assertChecked`/`refuteChecked`,
+`assertSelected`, `assertOptions`, `within(selector, fn)`, `step(name, fn)`,
+`debug()`. `visit`, `assertPath`, `refutePath`, `assertHas` and `refuteHas`
+throw: there is no URL bar in jsdom.
+
+Four verbs are deliberately adapted to app markup rather than textbook markup:
+
+| Verb | Adapted behaviour |
+|------|-------------------|
+| `fillIn` and every other label-addressed verb | Resolves `<label>Subject *</label>` sitting as a **sibling** of its control inside a wrapper `<div>` — no `htmlFor` needed — and ignores the trailing required marker. Falls back to a placeholder. Also accepts a number |
+| `choose` | By label, for the same reason: a radio with a sibling label has no accessible name |
+| `clickButton` / `clickLink` / `click` | Exact name first, then a name that *contains* it — an ordered fallback, so the lookup is never ambiguous. `clickButton` refuses a disabled button rather than clicking into the void |
+| `assertText` / `refuteText` | Containment checks over the rendered text, so `assertText('TICK-')` can assert a generated id's prefix |
+
+Failures print the whole chain:
+
+```
+feather-testing-core: Step 3 of 4 failed
+
+Failed at: clickButton('Save')
+Cause: Button "Save" is disabled — a user could not click it
+
+Chain:
+    [ok] fillIn('Title', 'x')
+    [ok] selectOption('Priority', 'High')
+>>> [FAILED] clickButton('Save')
+    [skipped] assertText('TICK-')
+```
+
+## Installation
+
+```bash
+npm install -D feather-testing-postgres
+```
+
+`feather-testing-core` is a peer dependency (optional: only the `/session` and
+`/react` entries need it — it is where the Session DSL lives), so your app and
+this package share one copy. Install it alongside: `npm install -D
+feather-testing-core`. The range is `>=0.4.0 <0.8` for now; it becomes
+`^0.7.0` when core 0.7 (with the fixture engine) is released.
+
+Peer dependencies, all optional — install what your setup uses: `vitest`
+(Vitest helpers), `postgres` (postgres.js under Node), `@electric-sql/pglite`
+(the PGlite engine), `drizzle-orm` 0.45.x (`db` handles, migrations,
+factories), `@happy-dom/global-registrator` (component tests under bun), plus `react`, `react-dom`,
+`@tanstack/react-query`, `@tanstack/react-router`, and
+`@testing-library/{dom,react,user-event}` for the `/react` and `/session`
+entry points. The package ships TypeScript source — Bun and Vitest transform
+it natively, so no build step is involved.
+
+## Legacy: the 0.2 delegate API (postgres.js + Vitest)
+
+The 0.2 API is kept, unchanged: a Vitest `test` with Phoenix-style fixtures
+for a Hono + postgres.js app whose global `sql` delegates to the test's
+transaction through a seam. New code should prefer injection (above).
+
+### Why: testing a React component that talks to a Postgres-backed server
+
+| Approach | Tests backend logic | Tests component rendering | Tests the integration | Fast | Isolated |
+|----------|:---:|:---:|:---:|:---:|:---:|
+| Server-only (HTTP tests + manual cleanup) | ✅ | ❌ | ❌ | ✅ | ❌ |
+| Component with mocks (`vi.mock`/MSW) | ❌ | ✅ | ❌ | ✅ | ✅ |
+| E2E (Playwright) | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **This library** | **✅** | **✅** | **✅** | **✅** | **✅** |
+
+Inspired by **Phoenix**: Ecto's SQL Sandbox runs every test inside a real
+database transaction that is rolled back at the end, so tests are fast,
+perfectly isolated, and exercise the production code path — no mocks, no
+fixtures files, no cleanup code. This library brings that model to a
+React + Hono + Postgres stack (and pairs it with the MECE component-testing
+philosophy of
+[feather-testing-convex](https://github.com/siraj-samsudeen/feather-testing-convex)).
+
+### How it works
+
+1. **SQL sandbox** — the app exports its postgres.js handle through a
+   delegating proxy (`_setSqlDelegate` seam). `withSandbox` opens a real
+   transaction, swaps the delegate, runs the test, and ALWAYS rolls back.
+   While sandboxed, the app's own `sql.begin(...)` calls become
+   `SAVEPOINT`s — the app still gets atomic "transactions" (aborted saves
+   roll back to the savepoint), but nothing ever commits.
+2. **In-process server** — under `NODE_ENV=test` the Hono `app` binds no
+   port; requests dispatch via `app.request(path, init)`. Auth is real
+   (JWT), users are real rows — created inside the sandbox.
+3. **Fetch bridge (component tests)** — `installFetchBridge(app)` patches
+   jsdom's `fetch` so the app's own api client (`fetch('/api/...')`) lands
+   on the in-process server. `renderApp(path)` mounts the REAL route tree
+   on a memory history with a fresh QueryClient: component → fetch → Hono →
+   sandboxed Postgres, end to end, in milliseconds.
+
+### Quick start (server test, postgres.js + Vitest)
 
 ```ts
 // test/pg-test.ts — bind the library to your app once
@@ -303,7 +464,7 @@ test('reporters see only their own tickets', async ({ seed, createUser }) => {
 // No cleanup. The transaction rolls back. The database is untouched.
 ```
 
-## Quick start (component test)
+### Quick start (component test)
 
 ```tsx
 import { screen } from '@testing-library/react'
@@ -319,7 +480,7 @@ test('create a ticket through the real UI', async ({ admin }) => {
 })
 ```
 
-## Fixtures
+### Fixtures
 
 `createPgTest(bindings, options?)` returns a Vitest `test` whose fixtures
 all run inside the per-test transaction:
@@ -339,47 +500,7 @@ app has no users, and only `admin` / `client` / `createUser` will ask for them.
 Clients throw `TestApiError { status, type, fields }` on non-2xx — assert
 with `rejects.toMatchObject({ status: 403 })`.
 
-## Session DSL
-
-`renderSession(path, client)` returns `{ session }` — a fluent, chainable
-driver. Methods queue; `await` executes the chain.
-
-The DSL itself is
-[feather-testing-core](https://github.com/siraj-samsudeen/feather-testing-core):
-this package contributes the DOM adapter, so the same vocabulary drives a
-component test here and a Playwright E2E test there. Every core verb is
-available — `fillIn`, `selectOption`, `check`/`uncheck`/`choose`, `click`,
-`clickButton`, `clickLink`, `submit`, `upload`, `dropFile`, `assertText`,
-`refuteText`, `assertValue`, `assertChecked`/`refuteChecked`,
-`assertSelected`, `assertOptions`, `within(selector, fn)`, `step(name, fn)`,
-`debug()`. `visit`, `assertPath`, `refutePath`, `assertHas` and `refuteHas`
-throw: there is no URL bar in jsdom.
-
-Four verbs are deliberately adapted to app markup rather than textbook markup:
-
-| Verb | Adapted behaviour |
-|------|-------------------|
-| `fillIn` and every other label-addressed verb | Resolves `<label>Subject *</label>` sitting as a **sibling** of its control inside a wrapper `<div>` — no `htmlFor` needed — and ignores the trailing required marker. Falls back to a placeholder. Also accepts a number |
-| `choose` | By label, for the same reason: a radio with a sibling label has no accessible name |
-| `clickButton` / `clickLink` / `click` | Exact name first, then a name that *contains* it — an ordered fallback, so the lookup is never ambiguous. `clickButton` refuses a disabled button rather than clicking into the void |
-| `assertText` / `refuteText` | Containment checks over the rendered text, so `assertText('TICK-')` can assert a generated id's prefix |
-
-Failures print the whole chain:
-
-```
-feather-testing-core: Step 3 of 4 failed
-
-Failed at: clickButton('Save')
-Cause: Button "Save" is disabled — a user could not click it
-
-Chain:
-    [ok] fillIn('Title', 'x')
-    [ok] selectOption('Priority', 'High')
->>> [FAILED] clickButton('Save')
-    [skipped] assertText('TICK-')
-```
-
-## Limitations & notes
+### Limitations & notes
 
 - **One connection per test**: all sandboxed queries serialize on the test
   transaction's connection. Parallel test FILES are separate processes with
@@ -401,28 +522,7 @@ Chain:
   transaction clock first:
   `update jobs set run_at = now() where run_at <= clock_timestamp()`.
 
-## Installation
-
-```bash
-npm install -D feather-testing-postgres
-```
-
-`feather-testing-core` is a peer dependency (optional: only the `/session` and
-`/react` entries need it — it is where the Session DSL lives), so your app and
-this package share one copy. Install it alongside: `npm install -D
-feather-testing-core`. The range is `>=0.4.0 <0.8` for now; it becomes
-`^0.7.0` when core 0.7 (with the fixture engine) is released.
-
-Peer dependencies, all optional — install what your setup uses: `vitest`
-(Vitest helpers), `postgres` (postgres.js under Node), `@electric-sql/pglite`
-(the PGlite engine), `drizzle-orm` 0.45.x (`db` handles, migrations,
-factories), `@happy-dom/global-registrator` (component tests under bun), plus `react`, `react-dom`,
-`@tanstack/react-query`, `@tanstack/react-router`, and
-`@testing-library/{dom,react,user-event}` for the `/react` and `/session`
-entry points. The package ships TypeScript source — Bun and Vitest transform
-it natively, so no build step is involved.
-
-## Adding the sandbox seam to your app
+### Adding the sandbox seam to your app
 
 The library needs one thing from your app: a swappable delegate around your
 postgres.js handle. Replace `export const sql = postgres(...)` with:

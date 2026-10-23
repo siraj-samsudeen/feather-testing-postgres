@@ -170,3 +170,28 @@ const seeded: PgTestBindings = { ...bindings, seed: ownSeed ?? saveRowSeed }
 void seeded
 void factory
 void seq
+
+// --- t.db typed from the schema --------------------------------------------
+import * as schema from '../fixtures/schema'
+import { sandboxEach } from '../../src/bun'
+import { createDbTest as createTypedDbTest } from '../../src/vitest'
+
+type AppDb = FeatherDrizzleDb<typeof schema>
+async function typedDbSurface() {
+  const typed = createFeatherDb<AppDb>({ schema })
+  const t = await typed.beginTest()
+  const users: { id: number; email: string; name: string }[] = await t.db.query.users.findMany()
+  void users
+  // @ts-expect-error — not any: an unknown table is a type error
+  await t.db.query.nope.findMany()
+  const each = sandboxEach<AppDb>({ schema })
+  const titles: string[] = (await each.db.select().from(schema.todos)).map((r) => r.title)
+  void titles
+  const vt = createTypedDbTest<AppDb>({ schema })
+  vt('typed', async ({ db }) => {
+    // @ts-expect-error — the row type is known
+    const wrong: number = (await db.select().from(schema.users))[0].email
+    void wrong
+  })
+}
+void typedDbSurface
