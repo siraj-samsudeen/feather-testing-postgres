@@ -2,7 +2,7 @@
 // standalone sandboxEach() helper that drives them with bun:test hooks.
 import { describe, expect, test } from 'bun:test'
 import { count } from 'drizzle-orm'
-import { postgresFixtures, type FeatherDb, type TestDb } from '../../src/fixtures'
+import { postgresFixtures, useFixtures, type FeatherDb, type TestDb } from '../../src/fixtures'
 import { sandboxEach, useBunFixtures, type FixtureValues } from '../../src/bun'
 import { users } from '../fixtures/schema'
 import { MIGRATIONS } from '../contract/runner'
@@ -129,3 +129,33 @@ const typesFollowTheSameRule = (t: FixtureValues<{
   void typed
 }
 void typesFollowTheSameRule
+
+describe('useFixtures(): a failed start surfaces the real error', () => {
+  test('getters rethrow the start error, not "not available here"', async () => {
+    const registered: Record<string, Array<() => unknown>> = { beforeAll: [], afterAll: [], beforeEach: [], afterEach: [] }
+    const hooks = {
+      beforeAll: (f: () => unknown) => void registered.beforeAll.push(f),
+      afterAll: (f: () => unknown) => void registered.afterAll.push(f),
+      beforeEach: (f: () => unknown) => void registered.beforeEach.push(f),
+      afterEach: (f: () => unknown) => void registered.afterEach.push(f),
+    }
+    const t = useFixtures(postgresFixtures({ migrations: '/nonexistent/migrations' }), hooks)
+    const run = (f: () => unknown) => Promise.resolve().then(f).then(() => null, (e: unknown) => e as Error)
+
+    const startError = await run(registered.beforeAll[0])
+    expect(startError).toBeInstanceOf(Error)
+    await run(registered.beforeEach[0]) // a test after the failed start
+    for (const read of [() => t.dbEngine, () => t.testDb, () => t.db, () => t.sql]) {
+      let message = ''
+      try {
+        read()
+      } catch (e) {
+        message = String(e)
+      }
+      expect(message).toContain(startError!.message)
+      expect(message).not.toMatch(/not available here/)
+    }
+    await run(registered.afterEach[0])
+    await run(registered.afterAll[0])
+  })
+})

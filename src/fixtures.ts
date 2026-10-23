@@ -207,6 +207,8 @@ export function useFixtures<F extends object>(fixtures: F, hooks: LifecycleHooks
 
   const values: Record<string, unknown> = {}
   const finishers = new Map<string, () => Promise<void>>()
+  // why a fixture isn't available: its own setup failed, or a dependency's
+  const failures = new Map<string, unknown>()
 
   async function setUp(k: string) {
     const d = defs[k]
@@ -241,9 +243,26 @@ export function useFixtures<F extends object>(fixtures: F, hooks: LifecycleHooks
   }
 
   const setupScope = async (scope: 'test' | 'file') => {
-    for (const k of order) if (defs[k].scope === scope) await setUp(k)
+    let first: unknown
+    for (const k of order) {
+      if (defs[k].scope !== scope) continue
+      const failedDep = defs[k].deps.find((d) => failures.has(d))
+      if (failedDep !== undefined) {
+        failures.set(k, failures.get(failedDep))
+        first ??= failures.get(failedDep)
+        continue
+      }
+      try {
+        await setUp(k)
+      } catch (e) {
+        failures.set(k, e)
+        first ??= e
+      }
+    }
+    if (first !== undefined) throw first
   }
   const teardownScope = async (scope: 'test' | 'file') => {
+    for (const k of order) if (defs[k].scope === scope) failures.delete(k)
     let first: unknown
     for (const k of [...order].reverse())
       if (defs[k].scope === scope && finishers.has(k)) {
@@ -269,6 +288,8 @@ export function useFixtures<F extends object>(fixtures: F, hooks: LifecycleHooks
     Object.defineProperty(out, k, {
       enumerable: true,
       get() {
+        // a failed setup: its real error, not "not available here"
+        if (failures.has(k)) throw failures.get(k)
         if (!finishers.has(k))
           throw new Error(
             `fixture '${k}' is not available here (${defs[k].scope}-scoped: read it inside a test${defs[k].scope === 'file' ? ' or hook' : ''})`,
