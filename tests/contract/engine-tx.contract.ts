@@ -83,3 +83,23 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
     })
   })
 }
+
+/** Documented behaviour (README "gaps"): inside one test, now() is frozen. */
+export function nowFrozenContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach }: RunnerApi) {
+  describe(`now() under tx (${ENGINE})`, () => {
+    const fdb = createFeatherDb({})
+    let t: TestDb
+    beforeAll(() => fdb.start(), 30_000)
+    afterAll(() => fdb.close())
+    beforeEach(async () => {
+      t = await fdb.beginTest()
+    })
+    afterEach(() => fdb.endTest())
+    test('is the transaction start time for the whole test', async () => {
+      const [a] = await t.sql<{ ts: string }>`select now()::text as ts`
+      await new Promise((r) => setTimeout(r, 5))
+      const [b] = await t.sql<{ ts: string }>`select now()::text as ts, clock_timestamp() as c`
+      expect(a.ts).toBe(b.ts)
+    })
+  })
+}
