@@ -32,6 +32,10 @@ Additive — every 0.2 export keeps its meaning.
   (lazy queries, cursors, callback handles, `bind`, descriptor reads) and
   running SQL after the test ended; a facade exposes no driver object at all.
   Driver features beyond that list are not available through `raw`.
+- Under Bun the root entry resolves (via a `bun` export condition) to a
+  runner-free entry with no vitest import; `createPgTest`/`createDbTest` there
+  throw a pointer to `feather-testing-postgres/bun`. Vitest consumers keep the
+  default entry, unchanged.
 - **Fixtures**: `postgresFixtures()` (definitions in feather-testing-core's
   Playwright-style shape, `[async (deps, use) => …, { scope, deps }]`),
   `useFixtures()`; bun:test helpers `sandboxEach()` /
