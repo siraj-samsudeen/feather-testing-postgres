@@ -202,6 +202,91 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
       expect((await titles()).sort()).toEqual(['a deep', 'b deep'])
     })
 
+    test('a parent does not settle before its children: failing Promise.all leaves the test usable', async () => {
+      let bError: unknown
+      await expect(
+        t.db.transaction(async (tx: any) => {
+          await Promise.all([
+            tx.transaction(async (a: any) => {
+              await a.insert(todos).values({ title: 'A' })
+              throw new Error('A fails')
+            }),
+            tx
+              .transaction(async (b: any) => {
+                await tick()
+                await b.insert(todos).values({ title: 'B' })
+              })
+              .catch((e: unknown) => {
+                bError = e
+                throw e
+              }),
+          ])
+        }),
+      ).rejects.toThrow('A fails')
+      // B either ran to completion inside the parent's savepoint before the
+      // parent failed, or was cancelled with a clear error — never left open
+      if (bError !== undefined) expect(String(bError)).toMatch(/parent transaction/)
+      expect(await titles()).toEqual([])
+      // the test's transaction is intact (no 25P02 "current transaction is aborted")
+      await t.db.insert(todos).values({ title: 'after' })
+      expect(await titles()).toEqual(['after'])
+    })
+
+    test('children still queued when their parent fails are cancelled; a running one finishes first', async () => {
+      const events: string[] = []
+      let cError: unknown
+      await expect(
+        t.db.transaction(async (tx: any) => {
+          await Promise.all([
+            tx.transaction(async () => {
+              throw new Error('A fails')
+            }),
+            tx.transaction(async (b: any) => {
+              events.push('B start')
+              for (let i = 0; i < 5; i++) await tick()
+              await b.insert(todos).values({ title: 'B' })
+              events.push('B end')
+            }),
+            tx
+              .transaction(async () => {
+                events.push('C start')
+              })
+              .catch((e: unknown) => {
+                cError = e
+                throw e
+              }),
+          ])
+        }),
+      ).rejects.toThrow('A fails')
+      expect(events).toEqual(['B start', 'B end'])
+      expect(String(cError)).toMatch(/cancelled — its parent transaction failed/)
+      expect(await titles()).toEqual([])
+      await t.db.insert(todos).values({ title: 'after' })
+      expect(await titles()).toEqual(['after'])
+    })
+
+    test('a parent that catches a child failure waits for the queued sibling before committing', async () => {
+      await t.db.transaction(async (tx: any) => {
+        try {
+          await Promise.all([
+            tx.transaction(async (a: any) => {
+              await a.insert(todos).values({ title: 'A' })
+              throw new Error('A fails')
+            }),
+            tx.transaction(async (b: any) => {
+              await tick()
+              await b.insert(todos).values({ title: 'B' })
+            }),
+          ])
+        } catch {
+          // the app recovers; B is still queued or running
+        }
+      })
+      expect(await titles()).toEqual(['B'])
+      await t.db.insert(todos).values({ title: 'after' })
+      expect(await titles()).toEqual(['B', 'after'])
+    })
+
     test('refuses a second open test (sequential tests only)', async () => {
       await expect(fdb.beginTest()).rejects.toThrow(/sequentially/)
     })

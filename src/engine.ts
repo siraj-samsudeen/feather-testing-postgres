@@ -167,8 +167,13 @@ function pgliteSql(client: any): SqlRunner {
 function serialisingDrizzle(rootDb: any): any {
   interface Node {
     real: any
+    /** The node's children: each queues behind the previous one. */
     tail: Promise<unknown>
+    /** Set once the node's own callback has failed: children not yet started
+     * are cancelled rather than run inside a savepoint about to roll back. */
+    failed: boolean
   }
+  const node = (real: any): Node => ({ real, tail: Promise.resolve(), failed: false })
   const active = new AsyncLocalStorage<Node>()
   const wrap = (real: any, own: Node): any =>
     new Proxy(real, {
@@ -176,12 +181,30 @@ function serialisingDrizzle(rootDb: any): any {
         if (prop === 'transaction')
           return (fn: (tx: unknown) => Promise<unknown>, config?: unknown) => {
             const parent = active.getStore() ?? own
-            const run = parent.tail.then(() =>
-              parent.real.transaction((inner: any) => {
-                const node: Node = { real: inner, tail: Promise.resolve() }
-                return active.run(node, () => fn(wrap(inner, node)))
-              }, config),
-            )
+            const run = parent.tail.then(() => {
+              if (parent.failed)
+                throw new Error(
+                  'feather-testing-postgres: transaction cancelled — its parent transaction failed before it started',
+                )
+              return parent.real.transaction(async (inner: any) => {
+                const self = node(inner)
+                let result: unknown
+                try {
+                  result = await active.run(self, () => fn(wrap(inner, self)))
+                } catch (e) {
+                  // Cancel children still queued, let a running one finish
+                  // (it rolls back its own savepoint), then fail: the
+                  // savepoint is never released or rolled back under them.
+                  self.failed = true
+                  await self.tail
+                  throw e
+                }
+                // Settle only after every child has: a parent never finishes
+                // while a child's savepoint is open.
+                await self.tail
+                return result
+              }, config)
+            })
             parent.tail = run.catch(() => {})
             return run
           }
@@ -189,7 +212,7 @@ function serialisingDrizzle(rootDb: any): any {
         return typeof v === 'function' ? v.bind(target) : v
       },
     })
-  return wrap(rootDb, { real: rootDb, tail: Promise.resolve() })
+  return wrap(rootDb, node(rootDb))
 }
 
 /** A Bun.sql / postgres.js transaction handle whose `begin` opens a SAVEPOINT,
