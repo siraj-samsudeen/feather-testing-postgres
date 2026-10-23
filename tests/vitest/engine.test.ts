@@ -27,3 +27,5 @@ import { hiddenClientContract } from '../contract/hidden-client.contract'
 hiddenClientContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { databaseSafetyContract } from '../contract/database-safety.contract'
 databaseSafetyContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { cloneTeardownContract } from '../contract/clone-teardown.contract'
+cloneTeardownContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

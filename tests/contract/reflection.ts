@@ -48,10 +48,12 @@ export function foreignReachable(roots: object[], ours: Set<object>): object[] {
 
 export const ENDED = /this test has ended/
 
+/** 'ran', or the error text — including its cause (drizzle wraps driver
+ * errors in DrizzleQueryError, keeping ours as the cause). */
 export const refused = (fn: () => unknown) =>
   Promise.resolve()
     .then(fn)
     .then(
       () => 'ran',
-      (e: unknown) => String(e),
+      (e: unknown) => `${e} ${(e as { cause?: unknown })?.cause ?? ''}`,
     )

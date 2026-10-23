@@ -112,7 +112,8 @@ interface Conn {
   /** The client drizzle should be built over when no test transaction is held. */
   client: unknown
   kind: 'bun' | 'postgres-js' | 'pglite'
-  close(): Promise<void>
+  /** timeoutSeconds 0 force-closes (Postgres pools). */
+  close(timeoutSeconds?: number): Promise<void>
 }
 
 class Rollback extends Error {
@@ -155,8 +156,16 @@ function templateToText(strings: TemplateStringsArray, values: unknown[]): strin
 }
 
 /** Bun.sql and postgres.js: a tagged-template client. */
-function taggedSql(client: any, sched?: Scheduler): SqlRunner {
-  const q = <T>(fn: () => T | PromiseLike<T>) => (sched ? sched.query(fn) : Promise.resolve().then(fn))
+/** Where a test's queries are admitted: the tx scheduler or a clone's gate.
+ * Both refuse once the test ended and know what is still in flight. */
+interface QueryGate {
+  check(): void
+  query<T>(fn: () => T | PromiseLike<T>): Promise<T>
+  track(work: Promise<unknown>): void
+}
+
+function taggedSql(client: any, gate?: QueryGate): SqlRunner {
+  const q = <T>(fn: () => T | PromiseLike<T>) => (gate ? gate.query(fn) : Promise.resolve().then(fn))
   const run = (async (strings: TemplateStringsArray, ...values: unknown[]) =>
     Array.from(await q(() => client(strings, ...values)))) as SqlRunner
   run.unsafe = async (text, params) => Array.from(await q(() => client.unsafe(text, params ?? [])))
@@ -164,8 +173,8 @@ function taggedSql(client: any, sched?: Scheduler): SqlRunner {
 }
 
 /** PGlite: query(text, params). */
-function pgliteSql(client: any, sched?: Scheduler): SqlRunner {
-  const q = <T>(fn: () => T | PromiseLike<T>) => (sched ? sched.query(fn) : Promise.resolve().then(fn))
+function pgliteSql(client: any, gate?: QueryGate): SqlRunner {
+  const q = <T>(fn: () => T | PromiseLike<T>) => (gate ? gate.query(fn) : Promise.resolve().then(fn))
   const run = (async (strings: TemplateStringsArray, ...values: unknown[]) =>
     (await q(() => client.query(templateToText(strings, values), values))).rows) as SqlRunner
   run.unsafe = async (text, params) => (await q(() => client.query(text, params ?? []))).rows
@@ -308,10 +317,8 @@ interface RawPort {
 
 /** What a facade checks: new work refused once ended; savepoint cleanup
  * allowed until closed. */
-interface RawGate {
-  check(): void
+interface RawGate extends QueryGate {
   readonly closed: boolean
-  track(work: Promise<unknown>): void
 }
 
 const plainRows = (rows: Iterable<unknown>): Row[] => Array.from(rows, (r) => ({ ...(r as Row) }))
@@ -330,20 +337,47 @@ function pglitePort(handle: any, instance: boolean): RawPort {
   }
 }
 
-/** A clone's raw gate: the database is discarded at endTest, so ended and
- * closed coincide. */
-function cloneGate(): RawGate & { ended: boolean } {
-  const gate = {
-    ended: false,
-    check() {
-      if (gate.ended) throw endedError()
-    },
-    get closed() {
-      return gate.ended
-    },
-    track() {},
+/** A clone's gate: refuses new work once the test ended, and tracks what is in
+ * flight so endTest can let it finish (bounded) before closing the clone. */
+class CloneGate implements RawGate {
+  ended = false
+  closed = false
+  readonly inflight = new Set<Promise<unknown>>()
+
+  check(): void {
+    if (this.ended) throw endedError()
   }
-  return gate
+
+  track(work: Promise<unknown>): void {
+    const settled = work.then(
+      () => {},
+      () => {},
+    )
+    this.inflight.add(settled)
+    void settled.then(() => this.inflight.delete(settled))
+  }
+
+  query<T>(fn: () => T | PromiseLike<T>): Promise<T> {
+    const work = (async () => {
+      this.check()
+      return fn()
+    })()
+    this.track(work)
+    return work
+  }
+}
+
+/** Resolves true if all of `work` settles within `ms`, false otherwise. */
+async function settledWithin(work: Promise<unknown>[], ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const result = await Promise.race([
+    Promise.all(work.map((w) => w.then(() => {}, () => {}))).then(() => true),
+    new Promise<boolean>((r) => {
+      timer = setTimeout(() => r(false), ms)
+    }),
+  ])
+  clearTimeout(timer)
+  return result
 }
 
 function clientHiddenError(): Error {
@@ -381,11 +415,7 @@ function rawFacade(port: RawPort, gate: RawGate, inTransaction: boolean, names =
   // savepoints are serialised with db and sql (a write in flight never lands
   // inside — and vanishes with — someone else's savepoint).
   const sched = gate instanceof Scheduler ? gate : undefined
-  const run = async (text: string, params: unknown[]) => {
-    if (sched) return sched.query(() => port.query(text, params))
-    gate.check()
-    return port.query(text, params)
-  }
+  const run = (text: string, params: unknown[]) => gate.query(() => port.query(text, params))
   const facade = (strings: TemplateStringsArray, ...values: unknown[]) =>
     run(templateToText(strings, values), values)
   const savepoint = async <T>(fn: (raw: RawSql) => T | Promise<T>): Promise<T> => {
@@ -514,12 +544,18 @@ function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
  * callback gets another adapter), and options (drizzle writes its parsers
  * there at construction; a throwaway — the real parsers live on the root
  * pool, configured when the engine starts). */
-function savepointingTaggedTx(tx: any, sched: Scheduler): unknown {
-  const adapt = (handle: any): unknown => {
-    const savepoint = (a: unknown, b?: unknown) => {
-      sched.check()
+function taggedClient(root: any, gate: QueryGate, pool: boolean): unknown {
+  const adapt = (handle: any, isPool: boolean): unknown => {
+    const begin = (a: unknown, b?: unknown) => {
+      gate.check()
       const fn = (typeof a === 'function' ? a : b) as (c: unknown) => unknown
-      return handle.savepoint((h: any) => fn(adapt(h)))
+      // a pool opens a real transaction (clone); a transaction handle a
+      // SAVEPOINT (tx, and nested transactions everywhere)
+      const work = isPool
+        ? handle.begin((h: any) => fn(adapt(h, false)))
+        : handle.savepoint((h: any) => fn(adapt(h, false)))
+      if (isPool) gate.track(work)
+      return work
     }
     return Object.freeze({
       get options() {
@@ -527,17 +563,42 @@ function savepointingTaggedTx(tx: any, sched: Scheduler): unknown {
       },
       unsafe: (query: string, params?: unknown[], opts?: unknown) => {
         const exec = <R>(f: (q: any) => R) =>
-          sched.query(() => f(opts === undefined ? handle.unsafe(query, params) : handle.unsafe(query, params, opts)))
+          gate.query(() => f(opts === undefined ? handle.unsafe(query, params) : handle.unsafe(query, params, opts)))
         return Object.freeze({
           values: () => exec((q) => q.values()),
           then: (ok?: (v: any) => unknown, ko?: (e: unknown) => unknown) => exec((q) => q).then(ok, ko),
         })
       },
-      begin: savepoint,
-      savepoint,
+      begin,
+      savepoint: (a: unknown, b?: unknown) => {
+        gate.check()
+        const fn = (typeof a === 'function' ? a : b) as (c: unknown) => unknown
+        return handle.savepoint((h: any) => fn(adapt(h, false)))
+      },
     })
   }
-  return adapt(tx)
+  return adapt(root, pool)
+}
+
+/** A clone's PGlite instance as drizzle's client: queries through the clone's
+ * gate; db.transaction() is a real PGlite transaction (nested ones are
+ * SAVEPOINTs drizzle issues through query). */
+function pgliteInstanceClient(pg: any, gate: QueryGate): unknown {
+  const inTx = (tx: any) =>
+    Object.freeze({
+      query: (...a: unknown[]) => gate.query(() => tx.query(...a)),
+      exec: (...a: unknown[]) => gate.query(() => tx.exec(...a)),
+    })
+  return Object.freeze({
+    query: (...a: unknown[]) => gate.query(() => pg.query(...a)),
+    exec: (...a: unknown[]) => gate.query(() => pg.exec(...a)),
+    transaction: (fn: (c: unknown) => unknown) => {
+      gate.check()
+      const work = pg.transaction((tx: any) => fn(inTx(tx)))
+      gate.track(work)
+      return work
+    },
+  })
 }
 
 /** A PGlite transaction whose `transaction()` opens a SAVEPOINT (drizzle's
@@ -603,7 +664,7 @@ async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Pr
       const sched = new Scheduler()
       return {
         tx: rawFacade(taggedPort(tx, driver, false), sched, true),
-        client: savepointingTaggedTx(tx, sched),
+        client: taggedClient(tx, sched, false),
         sql: taggedSql(tx, sched),
         sched,
         release: () => endHeld(sched, release, graceMs, () => conn.retire!()),
@@ -620,8 +681,8 @@ async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Pr
       // so the caller rolls it back before awaiting this
       return { closed: Promise.resolve(end(old, 0)).then(() => {}, () => {}) }
     },
-    async close() {
-      await end(root, 5)
+    async close(timeoutSeconds = 5) {
+      await end(root, timeoutSeconds)
     },
   }
   return conn
@@ -830,6 +891,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
   let snapshot: Blob | null = null
 
   let current: { ready: Promise<void>; end(): Promise<void> } | null = null
+  const graceMs = options.endTestGraceMs ?? DEFAULT_END_TEST_GRACE_MS
 
   const makeDb = (client: unknown) =>
     drz ? drz.drizzle({ client, schema: options.schema }) : noDrizzle()
@@ -933,18 +995,28 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       try {
         await self.start()
         if (strategy === 'tx') {
-          const h = await conn!.hold(options.endTestGraceMs ?? DEFAULT_END_TEST_GRACE_MS)
+          const h = await conn!.hold(graceMs)
           end = h.release
           return { db: drz ? serialisingDrizzle(makeDb(h.client), h.sched) : makeDb(h.client), sql: h.sql, raw: h.tx }
         }
         if (engine === 'pglite') {
           const c = await bootPglite({ ...options.pglite, loadDataDir: snapshot })
-          const gate = cloneGate()
-          end = () => {
+          const gate = new CloneGate()
+          end = async () => {
+            // refuse new work, let in-flight work finish (bounded), then close;
+            // past the grace the instance is abandoned rather than awaited
             gate.ended = true
-            return c.close()
+            const settled = await settledWithin([...gate.inflight], graceMs)
+            gate.closed = true
+            const closing = c.close()
+            if (settled) await closing
+            else await settledWithin([closing], graceMs)
           }
-          return { db: drz ? hideClient(makeDb(c.client)) : makeDb(c.client), sql: c.sql, raw: rawFacade(pglitePort(c.pg, true), gate, false) }
+          return {
+            db: drz ? hideClient(makeDb(pgliteInstanceClient(c.pg, gate))) : makeDb(c.client),
+            sql: pgliteSql(c.pg, gate),
+            raw: rawFacade(pglitePort(c.pg, true), gate, false),
+          }
         }
         const name = `feather_t_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}_${++cloneSeq}`
         const drop = () => admin!.sql.unsafe(`drop database if exists "${name}" with (force)`)
@@ -956,15 +1028,30 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
           await drop().catch(() => {})
           throw e
         }
-        const gate = cloneGate()
+        const gate = new CloneGate()
         end = async () => {
+          // refuse new work, let in-flight work finish (bounded), then close;
+          // past the grace, DROP … WITH (FORCE) terminates its connections
           gate.ended = true
-          await c.close()
-          await drop()
+          const settled = await settledWithin([...gate.inflight], graceMs)
+          gate.closed = true
+          if (settled) {
+            await c.close()
+            await drop()
+          } else {
+            // force-close the pool first (the driver retires its own sockets),
+            // then the server-side drop ends anything still attached
+            const closing = c.close(0).catch(() => {})
+            await drop().catch(() => {})
+            await settledWithin([closing], graceMs)
+          }
         }
+        // drizzle's postgres-js setup configures the clone pool's parsers; the
+        // db itself runs on our adapter
+        if (drz) drz.drizzle({ client: c.client })
         return {
-          db: drz ? hideClient(makeDb(c.client)) : makeDb(c.client),
-          sql: c.sql,
+          db: drz ? hideClient(makeDb(taggedClient(c.client, gate, true))) : makeDb(c.client),
+          sql: taggedSql(c.client, gate),
           raw: rawFacade(taggedPort(c.client, driver, true), gate, false),
         }
       } catch (e) {
