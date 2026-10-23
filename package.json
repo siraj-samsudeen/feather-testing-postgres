@@ -40,6 +40,11 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "test:vitest:pglite": "FEATHER_DB=pglite vitest run",
+    "test:vitest:postgres": "FEATHER_DB=postgres vitest run",
+    "test:bun:pglite": "FEATHER_DB=pglite bun test --preload ./src/happy-dom.ts ./tests/bun ./tests/react.test.tsx ./tests/session.test.tsx",
+    "test:bun:postgres": "FEATHER_DB=postgres bun test --preload ./src/happy-dom.ts ./tests/bun ./tests/react.test.tsx ./tests/session.test.tsx",
+    "test:lanes": "npm run test:vitest:pglite && npm run test:bun:pglite && npm run test:vitest:postgres && npm run test:bun:postgres",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
