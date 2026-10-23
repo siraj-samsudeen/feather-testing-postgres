@@ -5,46 +5,9 @@
 // reach a driver object or run a query after endTest.
 import { createFeatherDb, type FeatherDb, type PostgresDriver, type RawSql } from '../../src/engine'
 import { ENGINE, MIGRATIONS, type RunnerApi } from './runner'
+import { BUILTIN, ENDED, reachable, refused } from './reflection'
 
 type Variant = { label: string; driver?: PostgresDriver }
-
-const ENDED = /this test has ended/
-
-const refused = (fn: () => unknown) =>
-  Promise.resolve()
-    .then(fn)
-    .then(
-      () => 'ran',
-      (e: unknown) => String(e),
-    )
-
-/** Every object reachable by reflection: own keys (strings and symbols),
- * descriptors (value/get/set — getters are not invoked), prototypes. */
-function reachable(roots: unknown[]): Set<object> {
-  const seen = new Set<object>()
-  const queue = [...roots]
-  while (queue.length) {
-    const o = queue.pop()
-    if (!o || (typeof o !== 'object' && typeof o !== 'function') || seen.has(o as object)) continue
-    seen.add(o as object)
-    queue.push(Object.getPrototypeOf(o))
-    for (const k of Reflect.ownKeys(o as object)) {
-      const d = Reflect.getOwnPropertyDescriptor(o as object, k)
-      if (!d) continue
-      queue.push(d.value, d.get, d.set)
-    }
-  }
-  return seen
-}
-
-// JavaScript's own objects (AsyncFunction: the facade's async methods)
-const BUILTIN = reachable([
-  Function.prototype,
-  Object.prototype,
-  Array.prototype,
-  Promise.prototype,
-  Object.getPrototypeOf(async () => {}),
-])
 
 export function rawFacadeContract({ describe, test, expect }: RunnerApi) {
   const variants: Variant[] =

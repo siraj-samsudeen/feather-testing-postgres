@@ -21,3 +21,5 @@ import { graceTimeoutContract } from '../contract/grace-timeout.contract'
 graceTimeoutContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { rawFacadeContract } from '../contract/raw-facade.contract'
 rawFacadeContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { dbClientContract } from '../contract/db-client.contract'
+dbClientContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

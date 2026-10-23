@@ -468,36 +468,37 @@ function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
   return wrap(rootDb, sched.root)
 }
 
-/** A Bun.sql / postgres.js transaction handle whose `begin` opens a SAVEPOINT,
- * so drizzle's `db.transaction()` nests instead of issuing BEGIN. */
-function savepointingTaggedTx(tx: any, root: any, sched: Scheduler): unknown {
-  const savepoint = (target: any) => (a: unknown, b?: unknown) => {
-    sched.check()
-    const fn = (typeof a === 'function' ? a : b) as (h: unknown) => unknown
-    // the handle drizzle runs the transaction's queries on: gated as well
-    return target.savepoint((h: any) => fn(adapt(h)))
-  }
-  const adapt = (handle: any): any =>
-    new Proxy(handle, {
-      get(target, prop) {
-        // drizzle's postgres-js driver installs parsers on client.options; a
-        // transaction shares its root's connection and options.
-        if (prop === 'options' && target.options === undefined) return root.options
-        if (prop === 'begin' || prop === 'savepoint') return savepoint(target)
-        if (prop === 'unsafe')
-          return (query: string, params?: unknown[]) => {
-            // drizzle calls client.unsafe(q, p) and client.unsafe(q, p).values()
-            const exec = (f: (r: any) => unknown) => sched.query(() => f(target.unsafe(query, params)))
-            return {
-              values: () => exec((r) => r.values()),
-              then: (ok: any, ko: any) => exec((r) => r).then(ok, ko),
-            }
-          }
-        const v = target[prop]
-        return typeof v === 'function' ? v.bind(target) : v
+/** The client drizzle runs a test's queries on (Bun.sql / postgres.js): an
+ * adapter object of our own — like raw, never a proxy over the driver, so
+ * nothing reachable from db.$client is a driver object. It offers only what
+ * drizzle's bun-sql and postgres-js sessions use: unsafe(q, p, opts) (awaited
+ * or .values()), begin/savepoint (a SAVEPOINT, so db.transaction() nests; the
+ * callback gets another adapter), and options (drizzle writes its parsers
+ * there at construction; a throwaway — the real parsers live on the root
+ * pool, configured when the engine starts). */
+function savepointingTaggedTx(tx: any, sched: Scheduler): unknown {
+  const adapt = (handle: any): unknown => {
+    const savepoint = (a: unknown, b?: unknown) => {
+      sched.check()
+      const fn = (typeof a === 'function' ? a : b) as (c: unknown) => unknown
+      return handle.savepoint((h: any) => fn(adapt(h)))
+    }
+    return Object.freeze({
+      get options() {
+        return { parsers: {}, serializers: {} }
       },
-      apply: (target, _this, args) => sched.query(() => target(...args)),
+      unsafe: (query: string, params?: unknown[], opts?: unknown) => {
+        const exec = <R>(f: (q: any) => R) =>
+          sched.query(() => f(opts === undefined ? handle.unsafe(query, params) : handle.unsafe(query, params, opts)))
+        return Object.freeze({
+          values: () => exec((q) => q.values()),
+          then: (ok?: (v: any) => unknown, ko?: (e: unknown) => unknown) => exec((q) => q).then(ok, ko),
+        })
+      },
+      begin: savepoint,
+      savepoint,
     })
+  }
   return adapt(tx)
 }
 
@@ -505,7 +506,7 @@ function savepointingTaggedTx(tx: any, root: any, sched: Scheduler): unknown {
  * pglite session calls client.transaction for db.transaction()). */
 function savepointingPgliteTx(tx: any, sched: Scheduler): unknown {
   let n = 0
-  const client: any = {
+  const client: any = Object.freeze({
     query: (...a: unknown[]) => sched.query(() => tx.query(...a)),
     exec: (...a: unknown[]) => sched.query(() => tx.exec(...a)),
     async transaction(fn: (c: unknown) => Promise<unknown>) {
@@ -529,7 +530,7 @@ function savepointingPgliteTx(tx: any, sched: Scheduler): unknown {
         throw e
       }
     },
-  }
+  })
   return client
 }
 
@@ -564,7 +565,7 @@ async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Pr
       const sched = new Scheduler()
       return {
         tx: rawFacade(taggedPort(tx, driver, false), sched, true),
-        client: savepointingTaggedTx(tx, pool, sched),
+        client: savepointingTaggedTx(tx, sched),
         sql: taggedSql(tx, sched),
         sched,
         release: () => endHeld(sched, release, graceMs, () => conn.retire!()),
