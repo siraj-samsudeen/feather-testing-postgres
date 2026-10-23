@@ -201,6 +201,9 @@ class Scheduler {
   /** Set once the test transaction is rolled back: not even the savepoint
    * machinery may run (while draining, it still rolls savepoints back). */
   closed = false
+  /** Raw savepoints/transactions in progress (raw.savepoint(cb), raw.begin(cb)):
+   * endTest waits for them like app transactions. */
+  readonly rawOpen = new Set<Promise<unknown>>()
 
   endedError(): Error {
     return new Error(
@@ -240,7 +243,7 @@ async function endHeld(
   sched.ended = true
   let timer: ReturnType<typeof setTimeout> | undefined
   const settled = await Promise.race([
-    sched.root.tail.then(() => true),
+    Promise.all([sched.root.tail, ...sched.rawOpen]).then(() => true),
     new Promise<boolean>((r) => {
       timer = setTimeout(() => r(false), graceMs)
     }),
@@ -291,15 +294,36 @@ function guardQuery<T>(q: T, sched: Scheduler, seen = new WeakMap<object, unknow
 }
 
 /** The driver's own transaction handle, refusing use once the test ended —
- * when a query is created and again when it starts. */
+ * when a query is created and again when it starts. Handles the driver passes
+ * INTO callbacks (raw.savepoint(child => ...), raw.begin(...), nested) are
+ * guarded the same way, and a raw savepoint/transaction in progress is
+ * tracked so endTest waits for it like an app transaction. */
 function guardRaw(handle: any, sched: Scheduler): unknown {
+  // a callback receives guarded handles (driver handles are callable)
+  const guardCallback = (fn: Function) =>
+    function (this: unknown, ...cbArgs: unknown[]) {
+      return fn.apply(this, cbArgs.map((x) => (typeof x === 'function' ? guardRaw(x, sched) : x)))
+    }
   return new Proxy(handle, {
     get(target, prop) {
       const v = target[prop]
       if (typeof v !== 'function') return v
       return (...args: unknown[]) => {
         sched.check()
-        return guardQuery(v.apply(target, args), sched)
+        const hasCallback = args.some((a) => typeof a === 'function')
+        const r = v.apply(
+          target,
+          args.map((a) => (typeof a === 'function' ? guardCallback(a) : a)),
+        )
+        if (hasCallback && r && Object.getPrototypeOf(r) === Promise.prototype) {
+          const open = (r as Promise<unknown>).then(
+            () => {},
+            () => {},
+          )
+          sched.rawOpen.add(open)
+          void open.then(() => sched.rawOpen.delete(open))
+        }
+        return guardQuery(r, sched)
       }
     },
     apply(target, _this, args) {
