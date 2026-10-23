@@ -32,6 +32,13 @@ Additive — every 0.2 export keeps its meaning.
   (lazy queries, cursors, callback handles, `bind`, descriptor reads) and
   running SQL after the test ended; a facade exposes no driver object at all.
   Driver features beyond that list are not available through `raw`.
+- **Test-database safety** (postgres engine): the URL comes from `url`,
+  `FEATHER_DATABASE_URL`, `TEST_DATABASE_URL` or `DATABASE_URL`; whichever it
+  is must name a test-named database in its path (query-parameter database
+  selectors are refused) unless `allowAnyDatabase: true`, and the server's
+  `current_database()` is checked after connecting. The driver is always
+  handed the path's database explicitly (Bun.sql otherwise lets `PGDATABASE`
+  override the path).
 - Under Bun the root entry resolves (via a `bun` export condition) to a
   runner-free entry with no vitest import; `createPgTest`/`createDbTest` there
   throw a pointer to `feather-testing-postgres/bun`. Vitest consumers keep the

@@ -34,3 +34,5 @@ import { lostContextContract } from '../contract/lost-context.contract'
 lostContextContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { slowQueryContract } from '../contract/slow-query.contract'
 slowQueryContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { currentDatabaseContract } from '../contract/current-database.contract'
+currentDatabaseContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

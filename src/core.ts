@@ -8,6 +8,7 @@ export type { DbTestFixtures } from './vitest'
 export {
   cleanupStale,
   resolveTestDatabaseUrl,
+  assertTestDatabase,
   createFeatherDb,
   type EngineName,
   type FeatherDb,

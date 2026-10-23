@@ -179,6 +179,7 @@ export async function cleanupStale(opts: {
   const url = resolveTestDatabaseUrl(opts)
   const c = await connectPostgres(url, opts.driver ?? defaultDriver(), 1)
   try {
+    await assertTestDatabase(c.sql, opts)
     return await sweep(c.sql, { anyHost: true, olderThan: opts.olderThan })
   } finally {
     await c.close()
@@ -189,34 +190,65 @@ export async function cleanupStale(opts: {
  * test, test_db, my-test-db, tests — not contest, latest, testing. */
 const TEST_DATABASE_NAME = /(^|[^a-z0-9])tests?([^a-z0-9]|$)/i
 
+/** Query parameters a driver would take the database from instead of the
+ * path (postgres.js and Bun.sql both honour `database`). */
+const DATABASE_SELECTORS = new Set(['database', 'dbname', 'db'])
+
+function refusal(where: string, name: string): Error {
+  return new Error(
+    `feather-testing-postgres: refusing ${where} "${name}" — it isn't named like a test database (e.g. app_test). ` +
+      'Point FEATHER_DATABASE_URL or TEST_DATABASE_URL at a test database, or pass allowAnyDatabase: true to use this one.',
+  )
+}
+
 /** The Postgres URL tests may use, never a non-test database by accident: the
- * `url` option, else FEATHER_DATABASE_URL, else TEST_DATABASE_URL (explicit
- * choices), else DATABASE_URL — only if its database is named like a test
- * database, or with `allowAnyDatabase: true`. Throws otherwise, before any
- * connection is made. */
+ * `url` option, else FEATHER_DATABASE_URL, else TEST_DATABASE_URL, else
+ * DATABASE_URL. Whichever it is, the database it names must look like a test
+ * database (test as a word part) unless `allowAnyDatabase: true`, and it must
+ * name it in its path: a URL selecting the database through a query parameter
+ * is refused outright. An empty path is left to the check made after
+ * connecting (assertTestDatabase), where the server reports the real database.
+ * Throws before any connection is made. */
 export function resolveTestDatabaseUrl(
   options: { url?: string; allowAnyDatabase?: boolean } = {},
   env: Record<string, string | undefined> = process.env,
 ): string {
-  const explicit = options.url ?? env.FEATHER_DATABASE_URL ?? env.TEST_DATABASE_URL
-  if (explicit) return explicit
-  const url = env.DATABASE_URL
+  const url = options.url ?? env.FEATHER_DATABASE_URL ?? env.TEST_DATABASE_URL ?? env.DATABASE_URL
   if (!url)
     throw new Error(
       "feather-testing-postgres: engine 'postgres' needs a database: set FEATHER_DATABASE_URL (or TEST_DATABASE_URL, or a test-named DATABASE_URL), or pass `url`",
     )
-  if (options.allowAnyDatabase) return url
-  let name = ''
+  let parsed: URL
   try {
-    name = decodeURIComponent(new URL(url).pathname.replace(/^\//, ''))
+    parsed = new URL(url)
   } catch {
-    // unparsable: treated as not a test database
+    throw new Error('feather-testing-postgres: the database URL could not be parsed')
   }
-  if (TEST_DATABASE_NAME.test(name)) return url
-  throw new Error(
-    `feather-testing-postgres: refusing DATABASE_URL database "${name}" — it isn't named like a test database (e.g. app_test). ` +
-      'Point FEATHER_DATABASE_URL or TEST_DATABASE_URL at a test database, or pass allowAnyDatabase: true to use this one.',
-  )
+  for (const key of parsed.searchParams.keys())
+    if (DATABASE_SELECTORS.has(key.toLowerCase()))
+      throw new Error(
+        `feather-testing-postgres: refusing a database URL that selects its database outside its path (?${key}=). Name the database in the path.`,
+      )
+  const name = decodeURIComponent(parsed.pathname.replace(/^\//, ''))
+  if (!name || options.allowAnyDatabase || TEST_DATABASE_NAME.test(name)) return url
+  throw refusal('database', name)
+}
+
+/** The check after connecting: the server's own current_database() — what a
+ * URL's path, PGDATABASE, a driver's defaults or anything else resolved to.
+ * `expected`: exactly this database (a template or clone we created);
+ * otherwise it must be named like a test database unless allowAnyDatabase. */
+export async function assertTestDatabase(
+  sql: SqlRunner,
+  options: { allowAnyDatabase?: boolean; expected?: string } = {},
+): Promise<void> {
+  const [{ db }] = await sql<{ db: string }>`select current_database() as db`
+  if (options.expected !== undefined) {
+    if (db !== options.expected)
+      throw new Error(`feather-testing-postgres: connected to database "${db}", expected "${options.expected}"`)
+    return
+  }
+  if (!options.allowAnyDatabase && !TEST_DATABASE_NAME.test(db)) throw refusal('the connected database', db)
 }
 
 export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): FeatherDb<TDb> {
@@ -269,6 +301,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
     }
     const tpl = await connectPostgres(withDatabase(requireUrl(), templateName!), driver, 1)
     try {
+      await assertTestDatabase(tpl.sql, { expected: templateName! })
       await fn(tpl)
     } finally {
       // CREATE DATABASE … TEMPLATE refuses while anyone is connected to it.
@@ -291,9 +324,13 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
     } else {
       const u = requireUrl()
       // tx needs one connection: every test query runs on its transaction
-      if (strategy === 'tx') conn = await connectPostgres(u, driver, 1)
-      else {
+      // the server's own answer is checked before anything runs there
+      if (strategy === 'tx') {
+        conn = await connectPostgres(u, driver, 1)
+        await assertTestDatabase(conn.sql, options)
+      } else {
         admin = await connectPostgres(u, driver, 1)
+        await assertTestDatabase(admin.sql, options)
         templateName = `feather_tpl_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}`
         await admin.sql.unsafe(`create database "${templateName}"`)
         templateCreated = true
@@ -378,10 +415,12 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
         const name = `feather_t_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}_${++cloneSeq}`
         const drop = () => admin!.sql.unsafe(`drop database if exists "${name}" with (force)`)
         await admin!.sql.unsafe(`create database "${name}" template "${templateName}"`)
-        let c: Conn
+        let c: Conn | undefined
         try {
           c = await connectPostgres(withDatabase(requireUrl(), name), driver, options.poolMax ?? DEFAULT_CLONE_POOL_MAX)
+          await assertTestDatabase(c.sql, { expected: name })
         } catch (e) {
+          await c?.close(0).catch(() => {})
           await drop().catch(() => {})
           throw e
         }

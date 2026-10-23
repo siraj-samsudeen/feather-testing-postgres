@@ -1,6 +1,7 @@
 // Driver adapters: Bun.sql, postgres.js and PGlite behind one small interface,
 // and the clients drizzle runs a test's queries on.
 
+import { userInfo } from 'node:os'
 import { Scheduler, clientHiddenError, endHeld, endedError, type QueryGate } from './scheduler'
 import { pglitePort, rawFacade, taggedPort, templateToText, type RawSql } from './raw'
 import type { PostgresDriver, SqlRunner } from './engine'
@@ -193,15 +194,31 @@ export function savepointingPgliteTx(tx: any, sched: Scheduler): unknown {
  * this source (it ships as .ts). */
 export const optionalPeer = (name: string): Promise<any> => import(/* @vite-ignore */ name)
 
+/** The database a URL means, resolved the way libpq does — the path, else
+ * PGDATABASE, else the user — and handed to the driver explicitly, so every
+ * driver connects to the same one (Bun.sql would otherwise let PGDATABASE
+ * override the path, and reads it once per process). */
+function databaseOf(url: string): string {
+  const u = new URL(url)
+  return (
+    decodeURIComponent(u.pathname.replace(/^\//, '')) ||
+    process.env.PGDATABASE ||
+    decodeURIComponent(u.username) ||
+    process.env.PGUSER ||
+    userInfo().username
+  )
+}
+
 export async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Promise<Conn> {
   let make: () => any
+  const database = databaseOf(url)
   if (driver === 'bun') {
     const Bun = (globalThis as any).Bun
     if (!Bun?.SQL) throw new Error("feather-testing-postgres: driver 'bun' needs the Bun runtime; use driver 'postgres-js' under Node")
-    make = () => new Bun.SQL(url, { max })
+    make = () => new Bun.SQL(url, { max, database })
   } else {
     const postgres = (await optionalPeer('postgres')).default
-    make = () => postgres(url, { max, onnotice: () => {} })
+    make = () => postgres(url, { max, database, onnotice: () => {} })
   }
   const end = (pool: any, timeout: number) => (driver === 'bun' ? pool.close({ timeout }) : pool.end({ timeout }))
   let root = make()
@@ -311,5 +328,8 @@ export function defaultDriver(): PostgresDriver {
 export function withDatabase(url: string, name: string): string {
   const u = new URL(url)
   u.pathname = `/${name}`
+  // the path names the database: drop any parameter a driver would prefer
+  for (const key of [...u.searchParams.keys()])
+    if (['database', 'dbname', 'db'].includes(key.toLowerCase())) u.searchParams.delete(key)
   return u.toString()
 }

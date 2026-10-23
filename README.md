@@ -121,10 +121,20 @@ Engine start + migrations: PGlite ≈ 0.6 s, Postgres ≈ 15–65 ms.
 
 Tests never run against a non-test database by accident. The URL is the
 `url` option, else `FEATHER_DATABASE_URL`, else `TEST_DATABASE_URL`, else
-`DATABASE_URL` — and `DATABASE_URL` only when its database is named like a
-test database (`test` as a word part: `app_test`, `test_db`, `my-test-db`),
-or with `allowAnyDatabase: true`. Anything else is refused before connecting,
-naming the database. `resolveTestDatabaseUrl(options?)` applies the same rule.
+`DATABASE_URL`, and whichever it is:
+
+- the database it names must look like a test database (`test` as a word
+  part: `app_test`, `test_db`, `my-test-db`) — unless `allowAnyDatabase: true`;
+- it must name it in its path: a URL that selects the database through a
+  query parameter (`?database=`, which both drivers honour) is refused;
+- after connecting, the server's own `current_database()` is checked the same
+  way — this catches an empty path resolved through `PGDATABASE` or the user
+  name, and anything else a driver does. Template and clone connections must
+  be exactly the database created for them.
+
+Refusals name the database and say how to opt in, and happen before any
+migration, `setup` or test runs. `resolveTestDatabaseUrl(options?)` and
+`assertTestDatabase(sql, options?)` apply the same rules.
 
 ### More on the injection contract (Elysia)
 

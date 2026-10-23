@@ -30,7 +30,8 @@ export function abandonedDatabasesContract({ describe, test, expect }: RunnerApi
       const sql = await openAdminSql()
       const exists = async (n: string) =>
         (await sql<{ n: number }>`select count(*)::int as n from pg_database where datname = ${n}`)[0].n === 1
-      const holder = createFeatherDb({ url: withDb(names.ownDeadOldConnected) })
+      // a deliberately non-test-named database: an explicit opt-in
+      const holder = createFeatherDb({ url: withDb(names.ownDeadOldConnected), allowAnyDatabase: true })
       try {
         for (const n of Object.values(names)) await sql.unsafe(`create database "${n}"`)
         await holder.beginTest() // an open connection: cleanupStale must leave it
