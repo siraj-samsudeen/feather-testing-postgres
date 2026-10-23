@@ -265,72 +265,79 @@ async function endHeld(
 
 const DEFAULT_END_TEST_GRACE_MS = 2000
 
-/** A query object guarded at execution as well as creation. Bun.sql and
- * postgres.js queries are lazy: built before endTest and awaited (or
- * .execute()d, .values()d, ...) after it, they would run on the bare
- * connection. Every method — whatever starts the query — checks first, and
- * whatever a method hands back that could start it later is guarded too: the
- * query itself, a cursor, an async iterator (next/return/throw), a forEach
- * query. Plain promises and data pass through (they carry results, not work). */
-function guardQuery<T>(q: T, sched: Scheduler, seen = new WeakMap<object, unknown>()): T {
-  if (!q || (typeof q !== 'object' && typeof q !== 'function')) return q
-  if (Object.getPrototypeOf(q) === Promise.prototype) return q
-  if (Array.isArray(q)) return q
-  const known = seen.get(q as object)
-  if (known) return known as T
-  const proxy: any = new Proxy(q as any, {
-    get(target, prop) {
-      const v = target[prop]
-      if (typeof v !== 'function') return v
-      return (...args: unknown[]) => {
-        sched.check()
-        const r = v.apply(target, args)
-        return r === target ? proxy : guardQuery(r, sched, seen)
-      }
-    },
-  })
-  seen.set(q as object, proxy)
-  return proxy
+/** Guards everything reachable from the test's raw driver handle, so no path
+ * from it yields an executable that skips the end-of-test check. Bun.sql and
+ * postgres.js are full of executables: the handle is a callable tagged
+ * template; queries are lazy (they start on then/execute/values/cursor/...);
+ * methods return new executables (cursors, iterators, bound functions); and
+ * callbacks receive child handles (raw.savepoint(child => ...)). So,
+ * structurally:
+ * - every function is wrapped with apply/construct traps that check first and
+ *   guard whatever the call returns — however it is reached (a method, a
+ *   destructured or bound copy, .call/.apply, a nested child);
+ * - every property read returns a guarded value;
+ * - function arguments (callbacks) receive guarded handles;
+ * - a raw savepoint/transaction in progress is tracked so endTest waits for it.
+ * Plain promises, arrays (results) and primitives pass through: they carry
+ * data, not work. */
+function guardRaw(handle: any, sched: Scheduler): unknown {
+  return guardValue(handle, sched, new Guards())
 }
 
-/** The driver's own transaction handle, refusing use once the test ended —
- * when a query is created and again when it starts. Handles the driver passes
- * INTO callbacks (raw.savepoint(child => ...), raw.begin(...), nested) are
- * guarded the same way, and a raw savepoint/transaction in progress is
- * tracked so endTest waits for it like an app transaction. */
-function guardRaw(handle: any, sched: Scheduler): unknown {
-  // a callback receives guarded handles (driver handles are callable)
+class Guards {
+  readonly proxies = new WeakMap<object, unknown>()
+  readonly targets = new WeakMap<object, object>()
+}
+
+function guardValue(x: any, sched: Scheduler, g: Guards): any {
+  if (!x || (typeof x !== 'object' && typeof x !== 'function')) return x
+  if (Object.getPrototypeOf(x) === Promise.prototype || Array.isArray(x)) return x
+  if (g.targets.has(x)) return x // already a guard
+  const known = g.proxies.get(x)
+  if (known) return known
+
+  const unwrap = (v: any) => (v && (typeof v === 'object' || typeof v === 'function') ? (g.targets.get(v) ?? v) : v)
+  // a callback receives guarded handles
   const guardCallback = (fn: Function) =>
     function (this: unknown, ...cbArgs: unknown[]) {
-      return fn.apply(this, cbArgs.map((x) => (typeof x === 'function' ? guardRaw(x, sched) : x)))
+      return fn.apply(this, cbArgs.map((a) => (typeof a === 'function' ? guardValue(a, sched, g) : a)))
     }
-  return new Proxy(handle, {
+  const prepareArgs = (args: unknown[]) =>
+    args.map((a) => (typeof a === 'function' && !g.targets.has(a as object) ? guardCallback(a as Function) : unwrap(a)))
+  const track = (r: unknown, hadCallback: boolean) => {
+    if (hadCallback && r && Object.getPrototypeOf(r) === Promise.prototype) {
+      const open = (r as Promise<unknown>).then(
+        () => {},
+        () => {},
+      )
+      sched.rawOpen.add(open)
+      void open.then(() => sched.rawOpen.delete(open))
+    }
+  }
+
+  const proxy = new Proxy(x, {
     get(target, prop) {
-      const v = target[prop]
-      if (typeof v !== 'function') return v
-      return (...args: unknown[]) => {
-        sched.check()
-        const hasCallback = args.some((a) => typeof a === 'function')
-        const r = v.apply(
-          target,
-          args.map((a) => (typeof a === 'function' ? guardCallback(a) : a)),
-        )
-        if (hasCallback && r && Object.getPrototypeOf(r) === Promise.prototype) {
-          const open = (r as Promise<unknown>).then(
-            () => {},
-            () => {},
-          )
-          sched.rawOpen.add(open)
-          void open.then(() => sched.rawOpen.delete(open))
-        }
-        return guardQuery(r, sched)
-      }
+      const v = Reflect.get(target, prop, target)
+      // Proxy invariant: a non-configurable, read-only property must read as is
+      const d = Reflect.getOwnPropertyDescriptor(target, prop)
+      if (d && !d.configurable && d.writable === false) return v
+      return guardValue(v, sched, g)
     },
-    apply(target, _this, args) {
+    apply(target, thisArg, args) {
       sched.check()
-      return guardQuery(target(...args), sched)
+      const hadCallback = args.some((a) => typeof a === 'function')
+      const r = Reflect.apply(target, unwrap(thisArg), prepareArgs(args))
+      track(r, hadCallback)
+      return guardValue(r, sched, g)
+    },
+    construct(target, args, newTarget) {
+      sched.check()
+      return guardValue(Reflect.construct(target, prepareArgs(args), unwrap(newTarget)), sched, g)
     },
   })
+  g.proxies.set(x, proxy)
+  g.targets.set(proxy, x)
+  return proxy
 }
 
 function newNode(real: any): TxNode {

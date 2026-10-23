@@ -5,7 +5,7 @@ type Fn = (...args: any[]) => any
 export interface RunnerApi {
   describe: Fn
   test: Fn
-  expect: (value: unknown) => any
+  expect: any
   beforeAll: Fn
   afterAll: Fn
   beforeEach: Fn

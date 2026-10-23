@@ -23,3 +23,5 @@ import { rawCursorContract } from '../contract/raw-cursor.contract'
 rawCursorContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { rawCallbackHandlesContract } from '../contract/raw-callback-handles.contract'
 rawCallbackHandlesContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { rawEscapePathsContract } from '../contract/raw-escape-paths.contract'
+rawEscapePathsContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
