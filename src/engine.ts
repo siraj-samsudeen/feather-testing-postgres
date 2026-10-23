@@ -299,7 +299,10 @@ function noDrizzle(): any {
   return new Proxy(
     {},
     {
-      get() {
+      get(_t, prop) {
+        // Not a thenable, and quiet to inspection: fixture runners await
+        // the value and tools probe symbols without meaning to use it.
+        if (prop === 'then' || typeof prop === 'symbol') return undefined
         throw new Error('feather-testing-postgres: `db` needs drizzle-orm installed (use `sql` for raw SQL)')
       },
     },
