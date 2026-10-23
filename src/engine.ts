@@ -232,6 +232,11 @@ function savepointingPgliteTx(tx: any): unknown {
   return client
 }
 
+/** Loads an optional peer. The specifier is not a literal, so TypeScript does
+ * not resolve it: a consumer without that peer installed still type-checks
+ * this source (it ships as .ts). */
+const optionalPeer = (name: string): Promise<any> => import(/* @vite-ignore */ name)
+
 async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Promise<Conn> {
   let root: any
   if (driver === 'bun') {
@@ -239,7 +244,7 @@ async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Pr
     if (!Bun?.SQL) throw new Error("feather-testing-postgres: driver 'bun' needs the Bun runtime; use driver 'postgres-js' under Node")
     root = new Bun.SQL(url, { max })
   } else {
-    const postgres = (await import('postgres')).default
+    const postgres = (await optionalPeer('postgres')).default
     root = postgres(url, { max, onnotice: () => {} })
   }
   return {
@@ -260,7 +265,7 @@ async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Pr
 async function bootPglite(options: Record<string, unknown> = {}): Promise<Conn & { pg: any }> {
   let mod: any
   try {
-    mod = await import('@electric-sql/pglite')
+    mod = await optionalPeer('@electric-sql/pglite')
   } catch {
     throw new Error("feather-testing-postgres: engine 'pglite' needs @electric-sql/pglite installed")
   }
