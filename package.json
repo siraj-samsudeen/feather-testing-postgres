@@ -24,6 +24,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./engine": "./src/engine.ts",
+    "./fixtures": "./src/fixtures.ts",
+    "./bun": "./src/bun.ts",
+    "./vitest": "./src/vitest.ts",
     "./react": "./src/react.tsx",
     "./session": "./src/session.ts"
   },
