@@ -42,10 +42,16 @@ export interface FeatherDbOptions {
   engine?: EngineName
   /** Default `'tx'`. Use `'clone'` per file for code that depends on COMMIT. */
   strategy?: IsolationStrategy
-  /** Postgres engine: the database to test in. Default `process.env.DATABASE_URL`.
-   * With `clone`, the server's other databases are left alone: the template
-   * and clones are created next to this one and dropped afterwards. */
+  /** Postgres engine: the database to test in. Default, in order:
+   * FEATHER_DATABASE_URL, TEST_DATABASE_URL, then DATABASE_URL — the last only
+   * when its database is named like a test database (see
+   * resolveTestDatabaseUrl). With `clone`, the server's other databases are
+   * left alone: the template and clones are created next to this one and
+   * dropped afterwards. */
   url?: string
+  /** Accept a DATABASE_URL whose database isn't named like a test database.
+   * Tests write to (tx: and roll back in; clone: copy next to) it. */
+  allowAnyDatabase?: boolean
   /** Postgres engine: default `'bun'` under Bun, `'postgres-js'` elsewhere. */
   driver?: PostgresDriver
   /** A drizzle-kit migrations folder applied once, in start(). */
@@ -750,15 +756,49 @@ export async function cleanupStale(opts: {
   olderThan: number
   url?: string
   driver?: PostgresDriver
+  allowAnyDatabase?: boolean
 }): Promise<string[]> {
-  const url = opts.url ?? process.env.DATABASE_URL
-  if (!url) throw new Error('feather-testing-postgres: cleanupStale needs DATABASE_URL (or the `url` option)')
+  const url = resolveTestDatabaseUrl(opts)
   const c = await connectPostgres(url, opts.driver ?? defaultDriver(), 1)
   try {
     return await sweep(c.sql, { anyHost: true, olderThan: opts.olderThan })
   } finally {
     await c.close()
   }
+}
+
+/** A database name a test run may use: `test` as a word part — app_test,
+ * test, test_db, my-test-db, tests — not contest, latest, testing. */
+const TEST_DATABASE_NAME = /(^|[^a-z0-9])tests?([^a-z0-9]|$)/i
+
+/** The Postgres URL tests may use, never a non-test database by accident: the
+ * `url` option, else FEATHER_DATABASE_URL, else TEST_DATABASE_URL (explicit
+ * choices), else DATABASE_URL — only if its database is named like a test
+ * database, or with `allowAnyDatabase: true`. Throws otherwise, before any
+ * connection is made. */
+export function resolveTestDatabaseUrl(
+  options: { url?: string; allowAnyDatabase?: boolean } = {},
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const explicit = options.url ?? env.FEATHER_DATABASE_URL ?? env.TEST_DATABASE_URL
+  if (explicit) return explicit
+  const url = env.DATABASE_URL
+  if (!url)
+    throw new Error(
+      "feather-testing-postgres: engine 'postgres' needs a database: set FEATHER_DATABASE_URL (or TEST_DATABASE_URL, or a test-named DATABASE_URL), or pass `url`",
+    )
+  if (options.allowAnyDatabase) return url
+  let name = ''
+  try {
+    name = decodeURIComponent(new URL(url).pathname.replace(/^\//, ''))
+  } catch {
+    // unparsable: treated as not a test database
+  }
+  if (TEST_DATABASE_NAME.test(name)) return url
+  throw new Error(
+    `feather-testing-postgres: refusing DATABASE_URL database "${name}" — it isn't named like a test database (e.g. app_test). ` +
+      'Point FEATHER_DATABASE_URL or TEST_DATABASE_URL at a test database, or pass allowAnyDatabase: true to use this one.',
+  )
 }
 
 export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): FeatherDb<TDb> {
@@ -769,7 +809,6 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
   if (strategy !== 'tx' && strategy !== 'clone')
     throw new Error(`feather-testing-postgres: unknown strategy '${strategy}' (use 'tx' or 'clone')`)
   const driver = options.driver ?? defaultDriver()
-  const url = options.url ?? process.env.DATABASE_URL
 
   // per folder: the migration, in flight or done (dropped if it fails), so
   // concurrent calls for one folder share one run
@@ -795,10 +834,10 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
   const makeDb = (client: unknown) =>
     drz ? drz.drizzle({ client, schema: options.schema }) : noDrizzle()
 
+  // resolved (and safety-checked) when the postgres engine starts
+  let url: string | undefined
   function requireUrl(): string {
-    if (!url)
-      throw new Error("feather-testing-postgres: engine 'postgres' needs DATABASE_URL (or the `url` option)")
-    return url
+    return (url ??= resolveTestDatabaseUrl(options))
   }
 
   /** Runs fn against the place migrations go: the database (tx) or template (clone). */

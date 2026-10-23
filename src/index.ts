@@ -15,6 +15,7 @@ export {
 } from './server'
 export {
   cleanupStale,
+  resolveTestDatabaseUrl,
   createFeatherDb,
   type EngineName,
   type FeatherDb,

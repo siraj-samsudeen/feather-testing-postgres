@@ -63,6 +63,15 @@ Measured on an M-series Mac (Bun 1.4.2, Postgres 17, PGlite 0.5.11), per
 test: `tx` ≈ 0.2 ms on every engine and driver; `clone` ≈ 68 ms on both.
 Engine start + migrations: PGlite ≈ 0.6 s, Postgres ≈ 15–65 ms.
 
+### Which database (postgres engine)
+
+Tests never run against a non-test database by accident. The URL is the
+`url` option, else `FEATHER_DATABASE_URL`, else `TEST_DATABASE_URL`, else
+`DATABASE_URL` — and `DATABASE_URL` only when its database is named like a
+test database (`test` as a word part: `app_test`, `test_db`, `my-test-db`),
+or with `allowAnyDatabase: true`. Anything else is refused before connecting,
+naming the database. `resolveTestDatabaseUrl(options?)` applies the same rule.
+
 ### The injection contract (Elysia)
 
 ```ts
@@ -131,7 +140,8 @@ import { createFeatherDb } from 'feather-testing-postgres'   // or /engine (runn
 const fdb = createFeatherDb({
   engine?: 'pglite' | 'postgres',      // FEATHER_DB, else 'pglite'
   strategy?: 'tx' | 'clone',           // 'tx'
-  url?: string,                        // DATABASE_URL (postgres engine)
+  url?: string,                        // see "Which database" below
+  allowAnyDatabase?: boolean,          // accept a non-test-named DATABASE_URL
   driver?: 'bun' | 'postgres-js',      // Bun.sql under Bun, else postgres.js
   migrations?: string,                 // drizzle-kit folder, applied once
   setup?: (sql) => unknown,            // once, after migrations (clone: on the template)
