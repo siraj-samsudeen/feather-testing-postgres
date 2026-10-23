@@ -123,10 +123,12 @@ export interface LifecycleHooks {
 }
 
 // (readonly too, so `[fn, { value: true }] as const` keeps its types)
-type ValueOf<D> = D extends readonly [infer X, FixtureOptions]
-  ? X extends FixtureFn<infer T, any>
-    ? T
-    : X
+type ValueOf<D> = D extends readonly [infer X, infer O extends FixtureOptions]
+  ? O extends { value: true }
+    ? X // marked a value: the function itself, even if it looks like a fixture
+    : X extends FixtureFn<infer T, any>
+      ? T
+      : X
   : D extends FixtureFn<infer T, any>
     ? T
     : D

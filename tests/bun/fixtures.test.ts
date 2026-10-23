@@ -67,3 +67,20 @@ describe('useFixtures(): plain values, { value: true } functions, destructured d
     expect(t.greet).toBe(greet)
   })
 })
+
+describe('useFixtures(): a { value: true } function keeps its type', () => {
+  const sent: string[] = []
+  // shaped like a fixture function (returns Promise<void>), but marked a value
+  const sendJob = async (job: string) => {
+    sent.push(job)
+  }
+  const t = useBunFixtures({ sendJob: [sendJob, { value: true }] as const })
+  test('typed as the function itself, not as a fixture function', async () => {
+    const typed: (job: string) => Promise<void> = t.sendJob
+    // @ts-expect-error — not unknown/any: a wrong type is rejected
+    const wrong: (job: number) => string = t.sendJob
+    void wrong
+    await typed('email')
+    expect(sent).toEqual(['email'])
+  })
+})
