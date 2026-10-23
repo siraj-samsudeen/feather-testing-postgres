@@ -121,6 +121,13 @@ the transaction whose callback issued it. `raw` follows the same rules:
 `raw.savepoint`/`raw.begin` queue like app transactions and raw queries like
 `sql`.
 
+Which transaction a query belongs to is tracked through the async context
+(`AsyncLocalStorage`). Code that loses it — a worker, queue or event emitter
+set up outside the transaction, running work for it — would wait for the
+very transaction it belongs to. Such a wait is bounded: past `endTestGraceMs`
+it fails with "…async context lost?" instead of hanging the test. Run that
+work inside the transaction's callback (or pass it the `tx`).
+
 **Nothing outlives the test.** Once `endTest()` begins, `db`, `sql` and `raw`
 reject every query — issued late or still queued — with "this test has ended
 — a query ran after endTest; await your app's work before the test finishes"

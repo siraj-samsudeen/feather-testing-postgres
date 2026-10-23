@@ -123,8 +123,11 @@ export function rawFacadeContract({ describe, test, expect }: RunnerApi) {
           const paused = new Promise<void>((r) => (resume = r))
           let lateWrite!: (o: string) => void
           const lateWriteOutcome = new Promise<string>((r) => (lateWrite = r))
+          let began!: () => void
+          const started = new Promise<void>((r) => (began = r))
           const suspended = raw
             .savepoint(async (c) => {
+              began()
               await paused
               lateWrite(await refused(() => c`insert into todos (title) values ('suspended')`))
             })
@@ -134,6 +137,7 @@ export function rawFacadeContract({ describe, test, expect }: RunnerApi) {
             )
           const tpl = (s: TemplateStringsArray) => s
 
+          await started // really open when the test ends
           await fdb.endTest()
           resume()
 

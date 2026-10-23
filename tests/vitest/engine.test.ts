@@ -31,3 +31,5 @@ import { cloneTeardownContract } from '../contract/clone-teardown.contract'
 cloneTeardownContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { clonePoolContract } from '../contract/clone-pool.contract'
 clonePoolContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { lostContextContract } from '../contract/lost-context.contract'
+lostContextContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

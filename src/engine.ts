@@ -212,6 +212,10 @@ const OPENING: TxNode = { real: null, tail: Promise.resolve(), failed: false, pa
  *   transaction (after that transaction's own children), never deadlocking.
  * Concurrent requests in one test are therefore serialised. */
 class Scheduler {
+  /** `waitMs`: how long work at the root may wait for transactions open on
+   * this test before it is taken for a lost async context (endTestGraceMs). */
+  constructor(readonly waitMs = DEFAULT_END_TEST_GRACE_MS) {}
+
   readonly active = new AsyncLocalStorage<TxNode>()
   readonly root: TxNode = { real: null, tail: Promise.resolve(), failed: false }
   /** Set when endTest() begins: from then on nothing may reach the connection
@@ -253,7 +257,32 @@ class Scheduler {
     }
     if (n.passthrough) return (async () => go())()
     if (this.ended) return Promise.reject(this.endedError())
-    return n.tail.then(go)
+    return this.waitTurn(n).then(go)
+  }
+
+  /** The node's queue — bounded at the root. Work outside every transaction
+   * waits for the open ones; if it was meant to run inside one but lost the
+   * async context (a worker, a queue, an emitter set up elsewhere), that open
+   * transaction is waiting for it, and the wait would never end. */
+  waitTurn(node: TxNode): Promise<unknown> {
+    if (node !== this.root) return node.tail
+    let timer: ReturnType<typeof setTimeout> | undefined
+    return Promise.race([
+      node.tail.finally(() => clearTimeout(timer)),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `feather-testing-postgres: a query waited ${this.waitMs} ms for a transaction still open in this test — ` +
+                  'was it issued outside that transaction’s callback (async context lost?). Run it inside the transaction ' +
+                  '(use its tx, or keep the async context, e.g. no worker/queue/emitter set up elsewhere), or await the transaction first.',
+              ),
+            ),
+          this.waitMs,
+        )
+      }),
+    ])
   }
 }
 
@@ -442,7 +471,8 @@ function rawFacade(port: RawPort, gate: RawGate, inTransaction: boolean, names =
       // its siblings under the innermost open transaction, settling only after
       // its own children, cancelling queued children if it fails
       const parent = sched.active.getStore() ?? sched.root
-      const work = parent.tail.then(() => {
+      const ahead = parent.tail
+      const work = sched.waitTurn(parent).then(() => {
         sched.check()
         if (parent.failed) throw cancelledError()
         return sched.active.run(OPENING, async () => {
@@ -464,7 +494,8 @@ function rawFacade(port: RawPort, gate: RawGate, inTransaction: boolean, names =
           return result
         })
       })
-      parent.tail = work.catch(() => {})
+      // still after whatever was ahead, even if this one gave up waiting
+      parent.tail = Promise.all([ahead, work.catch(() => {})])
       return work
     }
     const work = (async () => {
@@ -506,7 +537,8 @@ function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
           return (fn: (tx: unknown) => Promise<unknown>, config?: unknown) => {
             const parent = active.getStore() ?? own
             if (sched.ended) return Promise.reject(sched.endedError())
-            const run = parent.tail.then(() => {
+            const ahead = parent.tail
+            const run = sched.waitTurn(parent).then(() => {
               sched.check()
               if (parent.failed) throw cancelledError()
               return active.run(OPENING, () =>
@@ -530,7 +562,8 @@ function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
                 }, config),
               )
             })
-            parent.tail = run.catch(() => {})
+            // still after whatever was ahead, even if this one gave up waiting
+            parent.tail = Promise.all([ahead, run.catch(() => {})])
             return run
           }
         const v = Reflect.get(target, prop)
@@ -666,7 +699,7 @@ async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Pr
     async hold(graceMs) {
       const pool = root
       const { tx, release } = await holdOpen((fn) => pool.begin(fn))
-      const sched = new Scheduler()
+      const sched = new Scheduler(graceMs)
       return {
         tx: rawFacade(taggedPort(tx, driver, false), sched, true),
         client: taggedClient(tx, sched, false),
@@ -709,7 +742,7 @@ async function bootPglite(options: Record<string, unknown> = {}): Promise<Conn &
     sql: pgliteSql(pg),
     async hold(graceMs) {
       const { tx, release } = await holdOpen((fn) => pg.transaction(fn))
-      const sched = new Scheduler()
+      const sched = new Scheduler(graceMs)
       return {
         tx: rawFacade(pglitePort(tx, false), sched, true),
         client: savepointingPgliteTx(tx, sched),
