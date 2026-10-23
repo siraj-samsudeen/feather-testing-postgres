@@ -553,7 +553,9 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
   const driver = options.driver ?? defaultDriver()
   const url = options.url ?? process.env.DATABASE_URL
 
-  const migrated = new Set<string>()
+  // per folder: the migration, in flight or done (dropped if it fails), so
+  // concurrent calls for one folder share one run
+  const migrated = new Map<string, Promise<void>>()
   let starting: Promise<void> | null = null
   let drz: { drizzle: any; migrate: any } | null = null
 
@@ -628,7 +630,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
     await onTarget(async (c) => {
       for (const f of folders) {
         await applyMigrations(c, f)
-        migrated.add(f)
+        migrated.set(f, Promise.resolve())
       }
       await options.setup?.(c.sql)
     })
@@ -644,10 +646,15 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
 
     async migrateOnce(folder) {
       await self.start()
-      if (migrated.has(folder)) return
+      const known = migrated.get(folder)
+      if (known) return known
       if (current) throw new Error('feather-testing-postgres: call migrateOnce outside a test (beforeAll)')
-      await onTarget((c) => applyMigrations(c, folder))
-      migrated.add(folder)
+      const run = onTarget((c) => applyMigrations(c, folder))
+      migrated.set(folder, run)
+      run.catch(() => {
+        if (migrated.get(folder) === run) migrated.delete(folder)
+      })
+      return run
     },
 
     async beginTest() {

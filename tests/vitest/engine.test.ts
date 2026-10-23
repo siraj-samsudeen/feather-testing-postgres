@@ -15,3 +15,5 @@ failedStartContract({ describe, test, expect, beforeAll, afterAll, beforeEach, a
 import { abandonedDatabasesContract } from '../contract/abandoned-databases.contract'
 abandonedDatabasesContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 templateNamesContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { migrateOnceContract } from '../contract/migrate-once.contract'
+migrateOnceContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
