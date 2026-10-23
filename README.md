@@ -108,7 +108,10 @@ flight together would otherwise interleave. A transaction waits for its open
 siblings and settles only after its own child transactions (children still
 queued when it fails are cancelled with a clear error); a plain query through
 `db` or `sql` waits for transactions open outside it, and runs at once inside
-the transaction whose callback issued it. `raw` is not serialised.
+the transaction whose callback issued it. `raw` follows the same rules:
+`raw.savepoint`/`raw.begin` queue like app transactions and raw queries like
+`sql`. A raw cursor still open when the test ends is closed (within
+`endTestGraceMs`, else its connection is retired).
 
 **Nothing outlives the test.** Once `endTest()` begins, `db`, `sql` and `raw`
 reject every query — issued late or still queued — with "this test has ended

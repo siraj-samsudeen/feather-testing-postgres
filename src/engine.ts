@@ -365,6 +365,10 @@ function cloneGate(): RawGate & { ended: boolean } {
   return gate
 }
 
+function cancelledError(): Error {
+  return new Error('feather-testing-postgres: transaction cancelled — its parent transaction failed before it started')
+}
+
 function endedError(): Error {
   return new Error(
     "feather-testing-postgres: this test has ended — a query ran after endTest; await your app's work before the test finishes",
@@ -372,7 +376,12 @@ function endedError(): Error {
 }
 
 function rawFacade(port: RawPort, gate: RawGate, inTransaction: boolean, names = { n: 0 }): RawSql {
+  // In a test transaction the gate is the test's scheduler: raw queries and
+  // savepoints are serialised with db and sql (a write in flight never lands
+  // inside — and vanishes with — someone else's savepoint).
+  const sched = gate instanceof Scheduler ? gate : undefined
   const run = async (text: string, params: unknown[]) => {
+    if (sched) return sched.query(() => port.query(text, params))
     gate.check()
     return port.query(text, params)
   }
@@ -391,10 +400,41 @@ function rawFacade(port: RawPort, gate: RawGate, inTransaction: boolean, names =
       if (gate.closed) throw endedError()
       return port.query(q, [])
     }
+    const child = () => rawFacade(port, gate, true, names)
+    if (sched) {
+      // a node in the scheduler, exactly like a db transaction: queued behind
+      // its siblings under the innermost open transaction, settling only after
+      // its own children, cancelling queued children if it fails
+      const parent = sched.active.getStore() ?? sched.root
+      const work = parent.tail.then(() => {
+        sched.check()
+        if (parent.failed) throw cancelledError()
+        return sched.active.run(OPENING, async () => {
+          await machinery(`savepoint ${name}`)
+          // the parent's drizzle handle: a db.transaction() opened inside this
+          // raw savepoint nests in it (savepoints stack per connection)
+          const self = newNode(parent.real)
+          let result: T
+          try {
+            result = await sched.active.run(self, () => fn(child()))
+          } catch (e) {
+            self.failed = true
+            await self.tail
+            await machinery(`rollback to savepoint ${name}`).catch(() => {})
+            throw e
+          }
+          await self.tail
+          await machinery(`release savepoint ${name}`)
+          return result
+        })
+      })
+      parent.tail = work.catch(() => {})
+      return work
+    }
     const work = (async () => {
       await machinery(`savepoint ${name}`)
       try {
-        const result = await fn(rawFacade(port, gate, true, names))
+        const result = await fn(child())
         await machinery(`release savepoint ${name}`)
         return result
       } catch (e) {
@@ -463,10 +503,7 @@ function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
             if (sched.ended) return Promise.reject(sched.endedError())
             const run = parent.tail.then(() => {
               sched.check()
-              if (parent.failed)
-                throw new Error(
-                  'feather-testing-postgres: transaction cancelled — its parent transaction failed before it started',
-                )
+              if (parent.failed) throw cancelledError()
               return active.run(OPENING, () =>
                 parent.real.transaction(async (inner: any) => {
                   const self = newNode(inner)

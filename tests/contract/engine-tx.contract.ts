@@ -308,6 +308,46 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
       expect((await titles()).sort()).toEqual(['plain write via db', 'plain write via sql'])
     })
 
+    test('a write while a raw savepoint is open is not swept into its rollback', async () => {
+      const raw = t.raw
+      const results = await Promise.allSettled([
+        raw.savepoint(async (c) => {
+          await c`insert into todos (title) values ('in the rolled-back raw savepoint')`
+          await tick()
+          await tick()
+          throw new Error('raw work fails')
+        }),
+        (async () => {
+          await tick()
+          await t.db.insert(todos).values({ title: 'via db' })
+        })(),
+        (async () => {
+          await tick()
+          await t.sql`insert into todos (title) values ('via sql')`
+        })(),
+        (async () => {
+          await tick()
+          await raw`insert into todos (title) values ('via raw')`
+        })(),
+      ])
+      expect(results.map((r) => r.status)).toEqual(['rejected', 'fulfilled', 'fulfilled', 'fulfilled'])
+      expect((await titles()).sort()).toEqual(['via db', 'via raw', 'via sql'])
+    })
+
+    test('raw savepoints and db transactions nest inside each other (no deadlock)', async () => {
+      await t.raw.savepoint(async (c) => {
+        await c`insert into todos (title) values ('raw outer')`
+        await t.db.transaction(async (tx: any) => {
+          await tx.insert(todos).values({ title: 'db inside raw' })
+          await t.raw.savepoint(async (c2) => {
+            await c2`insert into todos (title) values ('raw inside db')`
+          })
+        })
+        await t.sql`insert into todos (title) values ('sql inside raw')`
+      })
+      expect((await titles()).sort()).toEqual(['db inside raw', 'raw inside db', 'raw outer', 'sql inside raw'])
+    })
+
     test('the outer db and sql inside a transaction callback run inside it (no deadlock)', async () => {
       await t.db.transaction(async (tx: any) => {
         await tx.insert(todos).values({ title: 'inside' })

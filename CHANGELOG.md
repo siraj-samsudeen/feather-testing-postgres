@@ -12,6 +12,10 @@ Additive — every 0.2 export keeps its meaning.
   `pglite`); strategies `tx` (default) and `clone`. `beginTest()` returns a
   Drizzle handle to inject into the app (`createApp({ db })`), raw `sql`, and
   the driver handle.
+- Under `tx`, `raw` is serialised with `db` and `sql`: raw savepoints queue like
+  app transactions, so a concurrent write never lands inside (and vanishes
+  with) a raw savepoint; raw cursors still open at `endTest` are closed.
+  `db.$client` is an adapter of our own (like `raw`), not the driver's client.
 - **`raw` is a facade, decided by the author after repeated proxy escapes.**
   `TestDb.raw` is a frozen object of our own (`` raw`…` ``, `unsafe`,
   `savepoint`/`begin`, and `cursor` on postgres.js), not the driver's handle.
