@@ -24,8 +24,8 @@ const names = {
 
 export function abandonedDatabasesContract({ describe, test, expect }: RunnerApi) {
   if (ENGINE !== 'postgres') return
-  describe('abandoned databases from crashed runs', () => {
-    test('start() drops only this host’s dead-pid databases older than an hour; cleanupStale() the rest', async () => {
+  describe('leftover databases from crashed runs', () => {
+    test('start() drops nothing it did not create; cleanupStale() is the explicit opt-in', async () => {
       // create/drop database cannot run inside a test transaction
       const sql = await openAdminSql()
       const exists = async (n: string) =>
@@ -33,21 +33,22 @@ export function abandonedDatabasesContract({ describe, test, expect }: RunnerApi
       const holder = createFeatherDb({ url: withDb(names.ownDeadOldConnected) })
       try {
         for (const n of Object.values(names)) await sql.unsafe(`create database "${n}"`)
-        await holder.beginTest() // an open connection: must survive every sweep
+        await holder.beginTest() // an open connection: cleanupStale must leave it
 
-        const fdb = createFeatherDb({})
-        await fdb.start()
-        await fdb.close()
+        for (const strategy of ['tx', 'clone'] as const) {
+          const fdb = createFeatherDb({ strategy })
+          await fdb.start()
+          await fdb.close()
+        }
+        // a hostname is not a pid namespace (containers share hostnames), so
+        // no automatic sweep: every leftover is still there
+        for (const n of Object.keys(names) as (keyof typeof names)[])
+          expect([n, await exists(names[n])]).toEqual([n, true])
 
-        expect(await exists(names.ownDeadOld)).toBe(false)
-        expect(await exists(names.ownDeadOldTemplate)).toBe(false)
-        for (const kept of ['ownDeadYoung', 'ownLiveOld', 'ownDeadOldConnected', 'otherHostDeadOld', 'otherHostYoung', 'notOurs'] as const)
-          expect([kept, await exists(names[kept])]).toEqual([kept, true])
-
-        // opt-in, for leftovers of other hosts: any host, still never a live
-        // pid on this host, never forced, never younger than olderThan
+        // opt-in: any host, older than olderThan, never this host's live pids,
+        // never forced (a connected database stays)
         const dropped = await cleanupStale({ olderThan: 3600_000 })
-        expect(dropped).toEqual([names.otherHostDeadOld])
+        expect(dropped.sort()).toEqual([names.ownDeadOld, names.ownDeadOldTemplate, names.otherHostDeadOld].sort())
         for (const kept of ['ownDeadYoung', 'ownLiveOld', 'ownDeadOldConnected', 'otherHostYoung', 'notOurs'] as const)
           expect([kept, await exists(names[kept])]).toEqual([kept, true])
       } finally {
@@ -55,7 +56,7 @@ export function abandonedDatabasesContract({ describe, test, expect }: RunnerApi
         for (const n of Object.values(names)) await sql.unsafe(`drop database if exists "${n}" with (force)`)
         await closeAdminSql()
       }
-    }, 30_000)
+    }, 60_000)
   })
 }
 

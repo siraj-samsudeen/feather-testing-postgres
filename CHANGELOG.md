@@ -15,6 +15,8 @@ Additive — every 0.2 export keeps its meaning.
 - **Fixtures**: `postgresFixtures()` (plain `{ scope, deps, setup, teardown }`
   definitions), `useFixtures()`; bun:test helpers `sandboxEach()` /
   `useBunFixtures()` (`/bun`); Vitest `createDbTest()` (`/vitest`).
+- `cleanupStale({ olderThan, url? })`: explicit cleanup of databases left by
+  crashed `clone` runs (nothing is dropped automatically).
 - **`/drizzle`**: `factory(table, defaults)` and `seq()`.
 - **`/happy-dom`**: run the `/react` entry under bun:test.
 - `createPgTest`: `seed` is a binding callback (default `saveRowSeed`, the

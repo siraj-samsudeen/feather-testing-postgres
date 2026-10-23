@@ -421,10 +421,11 @@ npm run test:bun:postgres
 (`tests/bun/`, `tests/vitest/`). Never point `DATABASE_URL` at a database you
 care about — the suites create and drop tables in it, and `clone` creates and
 drops `feather_tpl_<host>_<pid>_<created>_*` / `feather_t_<host>_<pid>_<created>_*`
-databases next to it (`<host>` is a hash of the hostname). A crashed run's
-leftovers are dropped by the next `start()` on that server only when provably
-safe: named by this host, pid no longer running, created over an hour ago, and
-never forced (a database anyone is connected to stays). Leftovers from other
-hosts or containers sharing the server need manual cleanup —
-`cleanupStale({ olderThan: ms, url? })` drops any host's feather databases
-older than that age (pick one longer than any run).
+databases next to it (`<host>` is a hash of the hostname), and drops only
+what it created. A crashed run leaves its databases behind, and nothing drops
+them automatically: a hostname is not a pid namespace (containers share
+hostnames), so no run can prove another's template abandoned. Clean up
+explicitly with `cleanupStale({ olderThan: ms, url? })` — e.g. as a CI setup
+step, or by hand — and only while no other test run shares the server: it
+drops any host's feather databases older than that age (never this host's
+live pids, never a database with open connections).

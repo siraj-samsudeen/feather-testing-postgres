@@ -373,15 +373,13 @@ async function sweep(sql: SqlRunner, opts: { anyHost: boolean; olderThan: number
   return dropped
 }
 
-/** start()'s automatic sweep: only databases named by THIS host, whose pid is
- * no longer running, created over an hour ago. Leftovers from other hosts or
- * containers sharing the server are never touched here — see cleanupStale. */
-const dropAbandoned = (sql: SqlRunner) => sweep(sql, { anyHost: false, olderThan: STALE_AFTER_MS })
-
-/** Opt-in cleanup of leftovers from any host (e.g. crashed CI containers on a
- * shared server): drops feather_tpl_* / feather_t_* databases created more
- * than `olderThan` ms ago, except this host's live runs, never forced. Use an
- * age longer than any run. Returns the names dropped. */
+/** Explicit cleanup of databases left by crashed runs. Nothing is dropped
+ * automatically: a hostname is not a pid namespace (containers share
+ * hostnames), so no engine can prove another run's template abandoned. Drops
+ * feather_tpl_* / feather_t_* databases created more than `olderThan` ms ago,
+ * skipping this host's live pids, never forced (a connected database stays).
+ * Run it where no other test run shares the server — e.g. a CI setup step.
+ * Returns the names dropped. */
 export async function cleanupStale(opts: {
   olderThan: number
   url?: string
@@ -473,7 +471,6 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
         await admin.sql.unsafe(`create database "${templateName}"`)
         templateCreated = true
       }
-      await dropAbandoned((conn ?? admin)!.sql)
       drz = await loadDrizzle(driver)
       // postgres-js: drizzle() configures the root client's parsers once, so
       // test transactions (which share them) parse dates/json the same way.
