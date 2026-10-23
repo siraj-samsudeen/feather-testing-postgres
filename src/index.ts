@@ -21,6 +21,7 @@ export {
   type FeatherDbOptions,
   type IsolationStrategy,
   type PostgresDriver,
+  type RawSql,
   type SqlRunner,
   type TestDb,
 } from './engine'

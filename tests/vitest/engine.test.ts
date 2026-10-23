@@ -19,9 +19,5 @@ import { migrateOnceContract } from '../contract/migrate-once.contract'
 migrateOnceContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { graceTimeoutContract } from '../contract/grace-timeout.contract'
 graceTimeoutContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
-import { rawCursorContract } from '../contract/raw-cursor.contract'
-rawCursorContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
-import { rawCallbackHandlesContract } from '../contract/raw-callback-handles.contract'
-rawCallbackHandlesContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
-import { rawEscapePathsContract } from '../contract/raw-escape-paths.contract'
-rawEscapePathsContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { rawFacadeContract } from '../contract/raw-facade.contract'
+rawFacadeContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

@@ -12,6 +12,13 @@ Additive — every 0.2 export keeps its meaning.
   `pglite`); strategies `tx` (default) and `clone`. `beginTest()` returns a
   Drizzle handle to inject into the app (`createApp({ db })`), raw `sql`, and
   the driver handle.
+- **`raw` is a facade, decided by the author after repeated proxy escapes.**
+  `TestDb.raw` is a frozen object of our own (`` raw`…` ``, `unsafe`,
+  `savepoint`/`begin`, and `cursor` on postgres.js), not the driver's handle.
+  Successive review rounds found driver objects escaping every proxy guard
+  (lazy queries, cursors, callback handles, `bind`, descriptor reads) and
+  running SQL after the test ended; a facade exposes no driver object at all.
+  Driver features beyond that list are not available through `raw`.
 - **Fixtures**: `postgresFixtures()` (plain `{ scope, deps, setup, teardown }`
   definitions), `useFixtures()`; bun:test helpers `sandboxEach()` /
   `useBunFixtures()` (`/bun`); Vitest `createDbTest()` (`/vitest`).

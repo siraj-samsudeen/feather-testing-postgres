@@ -118,8 +118,7 @@ in flight get up to 2 s (`endTestGraceMs`) to settle inside the test
 transaction before it rolls back, so nothing reaches the bare connection
 (where postgres.js would autocommit). If they still haven't settled, the
 Postgres engine destroys that connection and opens a fresh one rather than
-hand it to the next test. Lazy `raw` queries are checked when they start,
-not only when built. (Elysia's `handle` needs a
+hand it to the next test. (Elysia's `handle` needs a
 URL whose host is at least as long as `localhost`; `http://app/x` misroutes.)
 
 ### The API
@@ -146,7 +145,27 @@ await fdb.close()
 
 `db` is Drizzle (drizzle-orm `0.45.x`, an optional peer); `sql` is a tagged
 template returning rows, plus `sql.unsafe(text, params)`, on the same
-transaction; `raw` is the driver's own handle.
+transaction; `raw` is a small raw-SQL facade (below).
+
+### `raw`
+
+`raw` is a frozen object of this library's own, the same on every engine:
+
+| Member | What it does |
+|---|---|
+| `` raw`select … ${v}` `` | A query; interpolated values are bound parameters. Resolves to plain row objects. |
+| `raw.unsafe(text, params?)` | A query from SQL built at runtime. |
+| `raw.savepoint(fn)` / `raw.begin(fn)` | Runs `fn(child)` in a SAVEPOINT (a real transaction on a `clone` database): kept if it resolves, rolled back if it throws. `child` is another `raw`. Inside a test the transaction is already open, so `begin` is a savepoint too. |
+| `raw.cursor(text, params?, batchSize?)` | postgres.js only: an async iterable of row batches. |
+
+Every member checks that the test is still open, and results are plain data.
+**Driver features beyond this list are not available in tests, by design.**
+A driver handle is full of executables (lazy queries, cursors, child handles
+passed to callbacks, bound copies) and every proxy we put around one leaked
+a path that ran SQL after the test ended — on postgres.js straight onto the
+bare connection, where it autocommits. So `raw` exposes no driver object at
+all: nothing reachable from it (properties, descriptors, prototypes, symbols,
+`call`/`apply`/`bind`) leads to one. Use `db` or `sql` for everything else.
 
 **Fixtures.** `postgresFixtures(options | fdb)` returns definitions in the
 Playwright Test shape that feather-testing-core's fixture engine takes — each

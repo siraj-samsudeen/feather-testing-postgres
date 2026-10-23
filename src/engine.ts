@@ -70,9 +70,9 @@ export interface TestDb<TDb = any> {
   db: TDb
   /** Raw SQL on the same transaction/database as `db`. */
   sql: SqlRunner
-  /** The driver's own handle (Bun.sql / postgres.js transaction, PGlite
-   * transaction, or the clone's client) for anything the above doesn't cover. */
-  raw: unknown
+  /** Raw SQL through a frozen facade (never a driver object): raw`...`,
+   * unsafe, savepoint/begin, and cursor on postgres.js. See RawSql. */
+  raw: RawSql
 }
 
 export interface FeatherDb<TDb = any> {
@@ -102,7 +102,7 @@ interface Conn {
   retire?: () => { closed: Promise<void> }
   sql: SqlRunner
   /** Runs fn in a transaction that the caller controls through `release`. */
-  hold(graceMs: number): Promise<{ tx: unknown; client: unknown; sql: SqlRunner; sched: Scheduler; release(): Promise<void> }>
+  hold(graceMs: number): Promise<{ tx: RawSql; client: unknown; sql: SqlRunner; sched: Scheduler; release(): Promise<void> }>
   /** The client drizzle should be built over when no test transaction is held. */
   client: unknown
   kind: 'bun' | 'postgres-js' | 'pglite'
@@ -205,6 +205,15 @@ class Scheduler {
    * endTest waits for them like app transactions. */
   readonly rawOpen = new Set<Promise<unknown>>()
 
+  track(work: Promise<unknown>): void {
+    const settled = work.then(
+      () => {},
+      () => {},
+    )
+    this.rawOpen.add(settled)
+    void settled.then(() => this.rawOpen.delete(settled))
+  }
+
   endedError(): Error {
     return new Error(
       "feather-testing-postgres: this test has ended — a query ran after endTest; await your app's work before the test finishes",
@@ -265,79 +274,147 @@ async function endHeld(
 
 const DEFAULT_END_TEST_GRACE_MS = 2000
 
-/** Guards everything reachable from the test's raw driver handle, so no path
- * from it yields an executable that skips the end-of-test check. Bun.sql and
- * postgres.js are full of executables: the handle is a callable tagged
- * template; queries are lazy (they start on then/execute/values/cursor/...);
- * methods return new executables (cursors, iterators, bound functions); and
- * callbacks receive child handles (raw.savepoint(child => ...)). So,
- * structurally:
- * - every function is wrapped with apply/construct traps that check first and
- *   guard whatever the call returns — however it is reached (a method, a
- *   destructured or bound copy, .call/.apply, a nested child);
- * - every property read returns a guarded value;
- * - function arguments (callbacks) receive guarded handles;
- * - a raw savepoint/transaction in progress is tracked so endTest waits for it.
- * Plain promises, arrays (results) and primitives pass through: they carry
- * data, not work. */
-function guardRaw(handle: any, sched: Scheduler): unknown {
-  return guardValue(handle, sched, new Guards())
+// ---------------------------------------------------------------------------
+// raw: a frozen facade of our own. No driver object is ever reachable from it:
+// the driver sits behind a private port, held only in closures.
+
+type Row = Record<string, unknown>
+
+/** The test's raw SQL handle. Same API on every engine; every method checks
+ * that the test is still open, returns plain data, and hands callbacks
+ * another RawSql — never a driver object. */
+export interface RawSql {
+  <T = Row>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]>
+  unsafe<T = Row>(text: string, params?: unknown[]): Promise<T[]>
+  /** A SAVEPOINT in the test's transaction (a real transaction on a `clone`
+   * database): kept if fn resolves, rolled back if it throws. */
+  savepoint<T>(fn: (raw: RawSql) => T | Promise<T>): Promise<T>
+  /** Same as savepoint: inside a test, the transaction is already open. */
+  begin<T>(fn: (raw: RawSql) => T | Promise<T>): Promise<T>
+  /** postgres.js only: rows in batches of batchSize (default 1). */
+  cursor?<T = Row>(text: string, params?: unknown[], batchSize?: number): AsyncIterable<T[]>
 }
 
-class Guards {
-  readonly proxies = new WeakMap<object, unknown>()
-  readonly targets = new WeakMap<object, object>()
+/** How a facade reaches a driver (internal, never exposed). */
+interface RawPort {
+  query(text: string, params: unknown[]): Promise<Row[]>
+  /** Pool-like ports (a clone's pool or PGlite instance) open a real transaction. */
+  begin?<T>(fn: (port: RawPort) => Promise<T>): Promise<T>
+  cursor?(text: string, params: unknown[], batchSize: number): AsyncIterable<Row[]>
 }
 
-function guardValue(x: any, sched: Scheduler, g: Guards): any {
-  if (!x || (typeof x !== 'object' && typeof x !== 'function')) return x
-  if (Object.getPrototypeOf(x) === Promise.prototype || Array.isArray(x)) return x
-  if (g.targets.has(x)) return x // already a guard
-  const known = g.proxies.get(x)
-  if (known) return known
+/** What a facade checks: new work refused once ended; savepoint cleanup
+ * allowed until closed. */
+interface RawGate {
+  check(): void
+  readonly closed: boolean
+  track(work: Promise<unknown>): void
+}
 
-  const unwrap = (v: any) => (v && (typeof v === 'object' || typeof v === 'function') ? (g.targets.get(v) ?? v) : v)
-  // a callback receives guarded handles
-  const guardCallback = (fn: Function) =>
-    function (this: unknown, ...cbArgs: unknown[]) {
-      return fn.apply(this, cbArgs.map((a) => (typeof a === 'function' ? guardValue(a, sched, g) : a)))
-    }
-  const prepareArgs = (args: unknown[]) =>
-    args.map((a) => (typeof a === 'function' && !g.targets.has(a as object) ? guardCallback(a as Function) : unwrap(a)))
-  const track = (r: unknown, hadCallback: boolean) => {
-    if (hadCallback && r && Object.getPrototypeOf(r) === Promise.prototype) {
-      const open = (r as Promise<unknown>).then(
-        () => {},
-        () => {},
-      )
-      sched.rawOpen.add(open)
-      void open.then(() => sched.rawOpen.delete(open))
-    }
+const plainRows = (rows: Iterable<unknown>): Row[] => Array.from(rows, (r) => ({ ...(r as Row) }))
+
+function taggedPort(handle: any, driver: PostgresDriver, pool: boolean): RawPort {
+  return {
+    query: async (text, params) => plainRows(await handle.unsafe(text, params)),
+    begin: pool ? (fn) => handle.begin((h: any) => fn(taggedPort(h, driver, false))) : undefined,
+    cursor:
+      driver === 'postgres-js'
+        ? (text, params, batchSize) => handle.unsafe(text, params).cursor(batchSize)
+        : undefined,
   }
+}
 
-  const proxy = new Proxy(x, {
-    get(target, prop) {
-      const v = Reflect.get(target, prop, target)
-      // Proxy invariant: a non-configurable, read-only property must read as is
-      const d = Reflect.getOwnPropertyDescriptor(target, prop)
-      if (d && !d.configurable && d.writable === false) return v
-      return guardValue(v, sched, g)
+function pglitePort(handle: any, instance: boolean): RawPort {
+  return {
+    query: async (text, params) => plainRows((await handle.query(text, params)).rows),
+    begin: instance ? (fn) => handle.transaction((tx: any) => fn(pglitePort(tx, false))) : undefined,
+  }
+}
+
+/** A clone's raw gate: the database is discarded at endTest, so ended and
+ * closed coincide. */
+function cloneGate(): RawGate & { ended: boolean } {
+  const gate = {
+    ended: false,
+    check() {
+      if (gate.ended) throw endedError()
     },
-    apply(target, thisArg, args) {
-      sched.check()
-      const hadCallback = args.some((a) => typeof a === 'function')
-      const r = Reflect.apply(target, unwrap(thisArg), prepareArgs(args))
-      track(r, hadCallback)
-      return guardValue(r, sched, g)
+    get closed() {
+      return gate.ended
     },
-    construct(target, args, newTarget) {
-      sched.check()
-      return guardValue(Reflect.construct(target, prepareArgs(args), unwrap(newTarget)), sched, g)
-    },
-  })
-  g.proxies.set(x, proxy)
-  g.targets.set(proxy, x)
-  return proxy
+    track() {},
+  }
+  return gate
+}
+
+function endedError(): Error {
+  return new Error(
+    "feather-testing-postgres: this test has ended — a query ran after endTest; await your app's work before the test finishes",
+  )
+}
+
+function rawFacade(port: RawPort, gate: RawGate, inTransaction: boolean, names = { n: 0 }): RawSql {
+  const run = async (text: string, params: unknown[]) => {
+    gate.check()
+    return port.query(text, params)
+  }
+  const facade = (strings: TemplateStringsArray, ...values: unknown[]) =>
+    run(templateToText(strings, values), values)
+  const savepoint = async <T>(fn: (raw: RawSql) => T | Promise<T>): Promise<T> => {
+    gate.check()
+    if (!inTransaction && port.begin) {
+      const work = port.begin((p) => Promise.resolve(fn(rawFacade(p, gate, true))))
+      gate.track(work)
+      return work
+    }
+    const name = `feather_raw_sp_${++names.n}`
+    // savepoint cleanup may run while endTest drains, never once it closed
+    const machinery = async (q: string) => {
+      if (gate.closed) throw endedError()
+      return port.query(q, [])
+    }
+    const work = (async () => {
+      await machinery(`savepoint ${name}`)
+      try {
+        const result = await fn(rawFacade(port, gate, true, names))
+        await machinery(`release savepoint ${name}`)
+        return result
+      } catch (e) {
+        await machinery(`rollback to savepoint ${name}`).catch(() => {})
+        throw e
+      }
+    })()
+    gate.track(work)
+    return work
+  }
+  const methods: Record<string, unknown> = {
+    unsafe: (text: string, params: unknown[] = []) => run(text, params),
+    savepoint,
+    begin: savepoint,
+  }
+  if (port.cursor) {
+    const open = port.cursor.bind(port)
+    methods.cursor = (text: string, params: unknown[] = [], batchSize = 1) =>
+      Object.freeze({
+        [Symbol.asyncIterator]() {
+          let it: AsyncIterator<Row[]> | undefined
+          return Object.freeze({
+            async next(): Promise<IteratorResult<Row[]>> {
+              gate.check()
+              it ??= open(text, params, batchSize)[Symbol.asyncIterator]()
+              const r = await it.next()
+              return r.done ? { done: true, value: undefined } : { done: false, value: plainRows(r.value) }
+            },
+            async return(): Promise<IteratorResult<Row[]>> {
+              await it?.return?.()
+              return { done: true, value: undefined }
+            },
+          })
+        },
+      })
+  }
+  for (const [k, f] of Object.entries(methods)) Object.defineProperty(facade, k, { value: Object.freeze(f), enumerable: true })
+  return Object.freeze(facade) as unknown as RawSql
 }
 
 function newNode(real: any): TxNode {
@@ -486,7 +563,7 @@ async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Pr
       const { tx, release } = await holdOpen((fn) => pool.begin(fn))
       const sched = new Scheduler()
       return {
-        tx: guardRaw(tx, sched),
+        tx: rawFacade(taggedPort(tx, driver, false), sched, true),
         client: savepointingTaggedTx(tx, pool, sched),
         sql: taggedSql(tx, sched),
         sched,
@@ -529,7 +606,7 @@ async function bootPglite(options: Record<string, unknown> = {}): Promise<Conn &
       const { tx, release } = await holdOpen((fn) => pg.transaction(fn))
       const sched = new Scheduler()
       return {
-        tx: guardRaw(tx, sched),
+        tx: rawFacade(pglitePort(tx, false), sched, true),
         client: savepointingPgliteTx(tx, sched),
         sql: pgliteSql(tx, sched),
         sched,
@@ -790,8 +867,12 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
         }
         if (engine === 'pglite') {
           const c = await bootPglite({ ...options.pglite, loadDataDir: snapshot })
-          end = () => c.close()
-          return { db: makeDb(c.client), sql: c.sql, raw: c.pg }
+          const gate = cloneGate()
+          end = () => {
+            gate.ended = true
+            return c.close()
+          }
+          return { db: makeDb(c.client), sql: c.sql, raw: rawFacade(pglitePort(c.pg, true), gate, false) }
         }
         const name = `feather_t_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}_${++cloneSeq}`
         const drop = () => admin!.sql.unsafe(`drop database if exists "${name}" with (force)`)
@@ -803,11 +884,13 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
           await drop().catch(() => {})
           throw e
         }
+        const gate = cloneGate()
         end = async () => {
+          gate.ended = true
           await c.close()
           await drop()
         }
-        return { db: makeDb(c.client), sql: c.sql, raw: c.client }
+        return { db: makeDb(c.client), sql: c.sql, raw: rawFacade(taggedPort(c.client, driver, true), gate, false) }
       } catch (e) {
         if (current === slot) current = null
         throw e

@@ -393,36 +393,6 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
       expect(n).toBe(0)
     })
 
-    // Bun.sql and postgres.js build lazy query objects: one created from raw
-    // before the end and started after it must not run (it would autocommit).
-    const lazy: Record<string, any> = {}
-    if (ENGINE === 'postgres') {
-      test('builds lazy raw queries before the end (not run)', () => {
-        const raw = t.raw as any
-        lazy.awaited = raw`insert into todos (title) values ('lazy awaited')`
-        lazy.executed = raw`insert into todos (title) values ('lazy executed')`
-        lazy.values = raw.unsafe("insert into todos (title) values ('lazy values') returning id")
-      })
-
-      test('...and started after it: refused, nothing committed', async () => {
-        const outcomes = await Promise.all([
-          Promise.resolve().then(() => lazy.awaited).then(() => 'ran', (e: unknown) => e),
-          Promise.resolve().then(() => lazy.executed.execute()).then(() => 'ran', (e: unknown) => e),
-          Promise.resolve().then(() => lazy.values.values()).then(() => 'ran', (e: unknown) => e),
-        ])
-        for (const o of outcomes) expect(String(o)).toMatch(/this test has ended/)
-        await sleep(20)
-        const fresh = createFeatherDb({})
-        try {
-          const f = await fresh.beginTest()
-          const [{ m }] = await f.sql<{ m: number }>`select count(*)::int as m from todos`
-          expect(m).toBe(0)
-        } finally {
-          await fresh.close()
-        }
-      })
-    }
-
     test('refuses a second open test (sequential tests only)', async () => {
       await expect(fdb.beginTest()).rejects.toThrow(/sequentially/)
     })
