@@ -368,6 +368,31 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
       }
     })
 
+    let inFlight: Promise<unknown> | undefined
+    test('an app transaction failing on its own during endTest... (not awaited)', async () => {
+      let written!: () => void
+      const wrote = new Promise<void>((r) => (written = r))
+      inFlight = t.db
+        .transaction(async (tx: any) => {
+          await tx.insert(todos).values({ title: 'written before the end' })
+          written()
+          await sleep(30) // the test ends meanwhile
+          throw new Error('the app’s own failure')
+        })
+        .then(
+          () => 'resolved',
+          (e: unknown) => e,
+        )
+      await wrote
+    })
+
+    test('...surfaces its own error, and its savepoint was rolled back inside the test', async () => {
+      const outcome = await inFlight
+      expect(String(outcome)).toMatch(/the app’s own failure/)
+      const [{ n }] = await t.sql<{ n: number }>`select count(*)::int as n from todos`
+      expect(n).toBe(0)
+    })
+
     test('refuses a second open test (sequential tests only)', async () => {
       await expect(fdb.beginTest()).rejects.toThrow(/sequentially/)
     })

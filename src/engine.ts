@@ -189,6 +189,9 @@ class Scheduler {
   /** Set when endTest() begins: from then on nothing may reach the connection
    * (after the test transaction ends, postgres.js would autocommit it). */
   ended = false
+  /** Set once the test transaction is rolled back: not even the savepoint
+   * machinery may run (while draining, it still rolls savepoints back). */
+  closed = false
 
   endedError(): Error {
     return new Error(
@@ -229,7 +232,11 @@ async function endHeld(sched: Scheduler, release: () => Promise<void>): Promise<
     }),
   ])
   clearTimeout(timer)
-  await release()
+  try {
+    await release()
+  } finally {
+    sched.closed = true
+  }
 }
 
 const IN_FLIGHT_GRACE_MS = 2000
@@ -344,10 +351,12 @@ function savepointingPgliteTx(tx: any, sched: Scheduler): unknown {
     query: (...a: unknown[]) => sched.query(() => tx.query(...a)),
     exec: (...a: unknown[]) => sched.query(() => tx.exec(...a)),
     async transaction(fn: (c: unknown) => Promise<unknown>) {
-      // the savepoint machinery never touches the connection after the test
-      // ended (the test transaction is gone)
-      const machinery = (q: string) => {
-        sched.check()
+      sched.check() // no new savepoint once the test has ended
+      // the savepoint machinery may roll back while endTest drains in-flight
+      // work, but never touches the connection once the test transaction is gone
+      // async: a refusal is a rejection, so the .catch below sees it
+      const machinery = async (q: string) => {
+        if (sched.closed) throw sched.endedError()
         return tx.query(q)
       }
       const name = `feather_sp_${++n}`
