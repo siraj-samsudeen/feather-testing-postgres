@@ -42,7 +42,11 @@ Additive — every 0.2 export keeps its meaning.
   path is refused (no fallback to `PGDATABASE` or the user). The library's
   own SQL runs with `search_path` pinned to `pg_catalog, pg_temp` (tests keep
   their own), so user-defined functions or operators can't stand in for
-  built-ins.
+  built-ins. The library's own connections take only transport parameters
+  from the URL and run no driver startup query (postgres.js `fetch_types`
+  off), and the database check runs on one of them before any connection
+  tests use opens: no SQL, the library's or a driver's, runs on a database
+  not yet confirmed to be a test database.
 - The bun entry and every runner-free module type-check without vitest (the
   createPgTest types moved to `client.ts`, `DbTestFixtures` to `fixtures.ts`;
   both still re-exported where they were). Use `customConditions: ["bun"]`

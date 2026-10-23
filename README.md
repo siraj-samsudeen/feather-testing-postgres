@@ -138,6 +138,14 @@ and clones) runs with `search_path` pinned to `pg_catalog, pg_temp`, so a
 function or operator a user schema defines can't stand in for a built-in.
 The pin never reaches a test: tests keep their own `search_path`.
 
+**Threat model.** The library never runs SQL — its own or a driver's
+(postgres.js's startup type query included) — against a database it hasn't
+confirmed is a test database: the check runs first, on a connection of its
+own that takes only transport settings from the URL, and only then do the
+connections tests use open. Objects inside your own test database (functions,
+operators, a role or database `search_path`) are your code: they apply to
+your tests as they would in production.
+
 Refusals name the database and say how to opt in, and happen before any
 migration, `setup` or test runs. `resolveTestDatabaseUrl(options?)` and
 `assertTestDatabase(sql, options?)` apply the same rules.

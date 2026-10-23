@@ -178,7 +178,7 @@ export async function cleanupStale(opts: {
   allowAnyDatabase?: boolean
 }): Promise<string[]> {
   const url = resolveTestDatabaseUrl(opts)
-  const c = await connectPostgres(url, opts.driver ?? defaultDriver(), 1, { pinSearchPath: true })
+  const c = await connectPostgres(url, opts.driver ?? defaultDriver(), 1, { library: true })
   try {
     await assertTestDatabase(c.sql, opts)
     return await sweep(c.sql, { anyHost: true, olderThan: opts.olderThan })
@@ -312,6 +312,19 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
     return (url ??= resolveTestDatabaseUrl(options))
   }
 
+  /** The test-database check, on a library-only connection opened for it and
+   * closed after — so no shared or test connection (nor a driver's startup
+   * query) ever runs on a database not yet confirmed. `expected`: exactly
+   * this database (a template or clone we created). */
+  async function guardDatabase(target: string, expected?: string): Promise<void> {
+    const g = await connectPostgres(target, driver, 1, { library: true })
+    try {
+      await assertTestDatabase(g.sql, expected === undefined ? options : { expected })
+    } finally {
+      await g.close()
+    }
+  }
+
   /** Runs fn against the place migrations go: the database (tx) or template (clone). */
   async function onTarget(fn: (c: Conn) => Promise<void>) {
     if (strategy === 'tx') return fn(conn!)
@@ -320,9 +333,10 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       snapshot = await base!.pg.dumpDataDir('none')
       return
     }
-    const tpl = await connectPostgres(withDatabase(requireUrl(), templateName!), driver, 1)
+    const tplUrl = withDatabase(requireUrl(), templateName!)
+    await guardDatabase(tplUrl, templateName!) // before the template's own connection opens
+    const tpl = await connectPostgres(tplUrl, driver, 1)
     try {
-      await tpl.pinned((sql) => assertTestDatabase(sql, { expected: templateName! }))
       await fn(tpl)
     } finally {
       // CREATE DATABASE … TEMPLATE refuses while anyone is connected to it.
@@ -347,11 +361,11 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
       // tx needs one connection: every test query runs on its transaction
       // the server's own answer is checked before anything runs there
       if (strategy === 'tx') {
+        await guardDatabase(u) // before the pool tests use opens
         conn = await connectPostgres(u, driver, 1)
-        await conn.pinned((sql) => assertTestDatabase(sql, options))
       } else {
-        // the admin connection is the library's alone: pinned for its session
-        admin = await connectPostgres(u, driver, 1, { pinSearchPath: true })
+        // the admin connection is the library's alone, and is the guard
+        admin = await connectPostgres(u, driver, 1, { library: true })
         await assertTestDatabase(admin.sql, options)
         templateName = `feather_tpl_${HOST_ID}_${process.pid}_${Date.now().toString(36)}_${instanceId}`
         await admin.sql.unsafe(`create database "${templateName}"`)
@@ -439,8 +453,9 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
         await admin!.sql.unsafe(`create database "${name}" template "${templateName}"`)
         let c: Conn | undefined
         try {
-          c = await connectPostgres(withDatabase(requireUrl(), name), driver, options.poolMax ?? DEFAULT_CLONE_POOL_MAX)
-          await c.pinned((sql) => assertTestDatabase(sql, { expected: name }))
+          const cloneUrl = withDatabase(requireUrl(), name)
+          await guardDatabase(cloneUrl, name) // before the clone's test pool opens
+          c = await connectPostgres(cloneUrl, driver, options.poolMax ?? DEFAULT_CLONE_POOL_MAX)
         } catch (e) {
           await c?.close(0).catch(() => {})
           await drop().catch(() => {})

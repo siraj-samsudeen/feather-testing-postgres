@@ -12,10 +12,6 @@ export interface Conn {
    * returned promise settles when the old pool is closed. */
   retire?: () => { closed: Promise<void> }
   sql: SqlRunner
-  /** Runs the library's own fn in a short transaction of its own with
-   * search_path pinned (SET LOCAL): on a connection tests share, the pin
-   * ends with that transaction and never reaches a test. */
-  pinned<T>(fn: (sql: SqlRunner) => Promise<T>): Promise<T>
   /** Runs fn in a transaction that the caller controls through `release`. */
   hold(graceMs: number): Promise<{ tx: RawSql; client: unknown; sql: SqlRunner; sched: Scheduler; release(): Promise<void> }>
   /** The client drizzle should be built over when no test transaction is held. */
@@ -208,26 +204,53 @@ function pathDatabase(url: string): string {
   return name
 }
 
-/** `pinSearchPath`: for connections only the library uses (admin, cleanup) —
- * every session starts with PINNED_SEARCH_PATH. The path's database is
+/** URL parameters a library-only connection keeps: transport only. Anything
+ * else (search_path, options, any GUC) could change how SQL resolves. */
+const TRANSPORT_PARAMS = new Set([
+  'ssl',
+  'sslmode',
+  'sslrootcert',
+  'sslcert',
+  'sslkey',
+  'sslpassword',
+  'sslnegotiation',
+  'connect_timeout',
+  'target_session_attrs',
+])
+
+/** The URL for a library-only connection: the same server, credentials and
+ * database, with every parameter that isn't transport removed. */
+export function libraryUrl(url: string): string {
+  const u = new URL(url)
+  for (const key of [...u.searchParams.keys()]) if (!TRANSPORT_PARAMS.has(key.toLowerCase())) u.searchParams.delete(key)
+  return u.toString()
+}
+
+/** `library`: a connection only the library uses (admin, cleanup, the guard).
+ * It takes nothing from the URL that changes how SQL resolves (libraryUrl),
+ * starts every session with search_path = PINNED_SEARCH_PATH, and runs no
+ * driver startup query (postgres.js: fetch_types off; Bun.sql runs none).
+ * Test connections use the URL as given. Either way the path's database is
  * handed to the driver explicitly (Bun.sql would otherwise let PGDATABASE
  * override it). */
 export async function connectPostgres(
   url: string,
   driver: PostgresDriver,
   max = 2,
-  opts: { pinSearchPath?: boolean } = {},
+  opts: { library?: boolean } = {},
 ): Promise<Conn> {
   let make: () => any
-  const database = pathDatabase(url)
-  const pinned = opts.pinSearchPath ? { connection: { search_path: PINNED_SEARCH_PATH } } : {}
+  const target = opts.library ? libraryUrl(url) : url
+  const database = pathDatabase(target)
+  const library = opts.library ? { connection: { search_path: PINNED_SEARCH_PATH } } : {}
   if (driver === 'bun') {
     const Bun = (globalThis as any).Bun
     if (!Bun?.SQL) throw new Error("feather-testing-postgres: driver 'bun' needs the Bun runtime; use driver 'postgres-js' under Node")
-    make = () => new Bun.SQL(url, { max, database, ...pinned })
+    make = () => new Bun.SQL(target, { max, database, ...library })
   } else {
     const postgres = (await optionalPeer('postgres')).default
-    make = () => postgres(url, { max, database, onnotice: () => {}, ...pinned })
+    make = () =>
+      postgres(target, { max, database, onnotice: () => {}, ...library, ...(opts.library ? { fetch_types: false } : {}) })
   }
   const end = (pool: any, timeout: number) => (driver === 'bun' ? pool.close({ timeout }) : pool.end({ timeout }))
   let root = make()
@@ -238,12 +261,6 @@ export async function connectPostgres(
     },
     get sql() {
       return taggedSql(root)
-    },
-    pinned(fn) {
-      return root.begin(async (tx: any) => {
-        await tx.unsafe(`set local search_path = ${PINNED_SEARCH_PATH}`)
-        return fn(taggedSql(tx))
-      })
     },
     async hold(graceMs) {
       const pool = root
@@ -289,12 +306,6 @@ export async function bootPglite(options: Record<string, unknown> = {}): Promise
     pg,
     client: pg,
     sql: pgliteSql(pg),
-    pinned(fn) {
-      return pg.transaction(async (tx: any) => {
-        await tx.query(`set local search_path = ${PINNED_SEARCH_PATH}`)
-        return fn(pgliteSql(tx))
-      })
-    },
     async hold(graceMs) {
       const { tx, release } = await holdOpen((fn) => pg.transaction(fn))
       const sched = new Scheduler(graceMs)
