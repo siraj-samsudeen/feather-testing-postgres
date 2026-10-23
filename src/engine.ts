@@ -54,6 +54,10 @@ export interface FeatherDbOptions {
   allowAnyDatabase?: boolean
   /** Postgres engine: default `'bun'` under Bun, `'postgres-js'` elsewhere. */
   driver?: PostgresDriver
+  /** Postgres engine, `clone`: connections per test database (default 10) —
+   * enough for concurrent app transactions, each of which holds one. (`tx`
+   * always uses one: every query runs on the test's transaction.) */
+  poolMax?: number
   /** A drizzle-kit migrations folder applied once, in start(). */
   migrations?: string
   /** Runs once after migrations (tx: on the database; clone: on the template). */
@@ -288,6 +292,7 @@ async function endHeld(
 }
 
 const DEFAULT_END_TEST_GRACE_MS = 2000
+const DEFAULT_CLONE_POOL_MAX = 10
 
 // ---------------------------------------------------------------------------
 // raw: a frozen facade of our own. No driver object is ever reachable from it:
@@ -1023,7 +1028,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
         await admin!.sql.unsafe(`create database "${name}" template "${templateName}"`)
         let c: Conn
         try {
-          c = await connectPostgres(withDatabase(requireUrl(), name), driver)
+          c = await connectPostgres(withDatabase(requireUrl(), name), driver, options.poolMax ?? DEFAULT_CLONE_POOL_MAX)
         } catch (e) {
           await drop().catch(() => {})
           throw e

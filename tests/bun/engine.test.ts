@@ -28,3 +28,5 @@ import { databaseSafetyContract } from '../contract/database-safety.contract'
 databaseSafetyContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { cloneTeardownContract } from '../contract/clone-teardown.contract'
 cloneTeardownContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { clonePoolContract } from '../contract/clone-pool.contract'
+clonePoolContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
