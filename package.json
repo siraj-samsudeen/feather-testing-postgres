@@ -27,6 +27,7 @@
     "./fixtures": "./src/fixtures.ts",
     "./bun": "./src/bun.ts",
     "./vitest": "./src/vitest.ts",
+    "./drizzle": "./src/drizzle.ts",
     "./react": "./src/react.tsx",
     "./session": "./src/session.ts"
   },
@@ -44,16 +45,22 @@
     "feather-testing-core": "^0.4.0"
   },
   "peerDependencies": {
+    "@electric-sql/pglite": ">=0.3",
     "@tanstack/react-query": ">=5",
     "@tanstack/react-router": ">=1",
     "@testing-library/dom": ">=10",
     "@testing-library/react": ">=16",
     "@testing-library/user-event": ">=14",
+    "drizzle-orm": ">=0.44 <1",
+    "postgres": ">=3",
     "react": ">=18",
     "react-dom": ">=18",
     "vitest": ">=2"
   },
   "peerDependenciesMeta": {
+    "@electric-sql/pglite": {
+      "optional": true
+    },
     "@tanstack/react-query": {
       "optional": true
     },
@@ -69,10 +76,19 @@
     "@testing-library/user-event": {
       "optional": true
     },
+    "drizzle-orm": {
+      "optional": true
+    },
+    "postgres": {
+      "optional": true
+    },
     "react": {
       "optional": true
     },
     "react-dom": {
+      "optional": true
+    },
+    "vitest": {
       "optional": true
     }
   },

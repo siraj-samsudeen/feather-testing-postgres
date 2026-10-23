@@ -5,3 +5,5 @@ import { engineTxContract } from '../contract/engine-tx.contract'
 
 engineTxContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 engineCloneContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { factoryContract } from '../contract/factory.contract'
+factoryContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
