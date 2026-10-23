@@ -43,3 +43,5 @@ import { dropDatabaseContract } from '../contract/drop-database.contract'
 dropDatabaseContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
 import { libraryConnectionsContract } from '../contract/library-connections.contract'
 libraryConnectionsContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })
+import { socketContract } from '../contract/socket.contract'
+socketContract({ describe, test, expect, beforeAll, afterAll, beforeEach, afterEach })

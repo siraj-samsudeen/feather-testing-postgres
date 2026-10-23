@@ -142,7 +142,17 @@ The pin never reaches a test: tests keep their own `search_path`.
 (postgres.js's startup type query included) — against a database it hasn't
 confirmed is a test database: the check runs first, on a connection of its
 own that takes only transport settings from the URL, and only then do the
-connections tests use open. Objects inside your own test database (functions,
+connections tests use open. **One URL means one server**: host lists
+(`h1,h2`), hosts given as parameters (`?host=`) and a `PGHOST` list are
+refused, and so is `target_session_attrs` (URL or `PGTARGETSESSIONATTRS`) —
+its server probing would run before the check. Every connection, pooled,
+reconnected or replacing a retired pool, is handed the test-named database
+explicitly, so even a DNS change or a proxy failing over can only reach a
+database with that same test name; the first connection's
+`current_database()` check stays as the backstop. A Unix socket is one
+server too: `?path=` for Bun.sql (the socket file, e.g.
+`/tmp/.s.PGSQL.5432`, or a directory when the URL has no port), an empty URL
+host plus `PGHOST=/dir` for postgres.js. Objects inside your own test database (functions,
 operators, a role or database `search_path`) are your code: they apply to
 your tests as they would in production.
 

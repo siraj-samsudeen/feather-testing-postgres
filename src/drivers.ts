@@ -215,7 +215,7 @@ const TRANSPORT_PARAMS = new Set([
   'sslpassword',
   'sslnegotiation',
   'connect_timeout',
-  'target_session_attrs',
+  'path', // Bun.sql's Unix socket
 ])
 
 /** The URL for a library-only connection: the same server, credentials and

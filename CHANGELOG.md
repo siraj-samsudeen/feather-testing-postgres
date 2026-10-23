@@ -46,7 +46,10 @@ Additive — every 0.2 export keeps its meaning.
   from the URL and run no driver startup query (postgres.js `fetch_types`
   off), and the database check runs on one of them before any connection
   tests use opens: no SQL, the library's or a driver's, runs on a database
-  not yet confirmed to be a test database.
+  not yet confirmed to be a test database. One URL means one server: host
+  lists, `?host=`/`?hostaddr=`, a `PGHOST` list and `target_session_attrs`
+  (URL or `PGTARGETSESSIONATTRS`) are refused; library connections keep a
+  Unix socket (`?path=` for Bun.sql; postgres.js uses `PGHOST=/dir`).
 - The bun entry and every runner-free module type-check without vitest (the
   createPgTest types moved to `client.ts`, `DbTestFixtures` to `fixtures.ts`;
   both still re-exported where they were). Use `customConditions: ["bun"]`

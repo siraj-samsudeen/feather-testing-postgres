@@ -3,6 +3,7 @@
 // DATABASE_URL only when its database is named like a test database (or with
 // allowAnyDatabase: true). Pure resolution — runs in every lane.
 import { createFeatherDb, resolveTestDatabaseUrl } from '../../src/engine'
+import { libraryUrl } from '../../src/drivers'
 import type { RunnerApi } from './runner'
 
 const url = (db: string, host = 'localhost:5432') => `postgres://${host}/${db}`
@@ -69,6 +70,39 @@ export function databaseSafetyContract({ describe, test, expect }: RunnerApi) {
           [{ url: u, allowAnyDatabase: true }, {}],
         ] as const)
           expect(() => resolveTestDatabaseUrl(options, env)).toThrow(/must name its database, e\.g\. postgres:\/\/…\/app_test/)
+    })
+
+    test('one URL means one server: several hosts are refused, from every source', () => {
+      const ONE = /one server/
+      for (const u of ['postgres://h1:5432,h2:5432/app_test', 'postgres://u:p@h1,h2/app_test'])
+        for (const [options, env] of [
+          [{ url: u }, {}],
+          [{}, { FEATHER_DATABASE_URL: u }],
+          [{}, { DATABASE_URL: u }],
+          [{ url: u, allowAnyDatabase: true }, {}],
+        ] as const)
+          expect(() => resolveTestDatabaseUrl(options, env)).toThrow(ONE)
+      // hosts given as parameters, and PGHOST lists when the URL names no host
+      for (const q of ['host=/tmp', 'hostaddr=10.0.0.1', 'HOST=h2', 'path=/tmp&path=/var/run'])
+        expect(() => resolveTestDatabaseUrl({ url: url(`app_test?${q}`) }, {})).toThrow(ONE)
+      expect(() => resolveTestDatabaseUrl({ url: 'postgres:///app_test' }, { PGHOST: 'h1,h2' })).toThrow(ONE)
+      // a single socket is one server
+      expect(resolveTestDatabaseUrl({ url: url('app_test?path=/tmp') }, {})).toBe(url('app_test?path=/tmp'))
+      expect(resolveTestDatabaseUrl({ url: 'postgres:///app_test' }, { PGHOST: '/tmp' })).toBe('postgres:///app_test')
+    })
+
+    test('target_session_attrs is refused, from the URL and PGTARGETSESSIONATTRS', () => {
+      for (const q of ['target_session_attrs=read-write', 'TARGET_SESSION_ATTRS=primary'])
+        expect(() => resolveTestDatabaseUrl({ url: url(`app_test?${q}`) }, {})).toThrow(/target_session_attrs/)
+      expect(() => resolveTestDatabaseUrl({ url: url('app_test') }, { PGTARGETSESSIONATTRS: 'read-write' })).toThrow(
+        /PGTARGETSESSIONATTRS/,
+      )
+    })
+
+    test("library connections keep transport (ssl, Bun's socket path) and nothing else", () => {
+      const kept = new URL(libraryUrl(url('app_test?sslmode=require&path=/tmp&search_path=evil&options=-c%20x%3Dy&application_name=a')))
+      expect([...kept.searchParams.keys()].sort()).toEqual(['path', 'sslmode'])
+      expect(kept.pathname).toBe('/app_test')
     })
 
     test('allowAnyDatabase: true accepts any DATABASE_URL', () => {

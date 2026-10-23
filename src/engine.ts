@@ -220,12 +220,31 @@ export function resolveTestDatabaseUrl(
     throw new Error(
       "feather-testing-postgres: engine 'postgres' needs a database: set FEATHER_DATABASE_URL (or TEST_DATABASE_URL, or a test-named DATABASE_URL), or pass `url`",
     )
+  // one URL means one server: no host lists (postgres.js connects to any of
+  // them), no hosts given as parameters, no PGHOST list behind an empty host
+  const oneServer = (detail: string) =>
+    new Error(
+      `feather-testing-postgres: a database URL must mean one server — ${detail}. Give a single host (or one socket: ?path= for Bun.sql, PGHOST for postgres.js).`,
+    )
+  const authority = url.slice(url.indexOf('://') + 3).split(/[/?#]/)[0]
+  if (authority.slice(authority.lastIndexOf('@') + 1).includes(',')) throw oneServer('it lists several hosts')
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
     throw new Error('feather-testing-postgres: the database URL could not be parsed')
   }
+  const keys = [...parsed.searchParams.keys()].map((k) => k.toLowerCase())
+  if (keys.some((k) => k === 'host' || k === 'hostaddr')) throw oneServer('it names a host as a parameter')
+  if (keys.filter((k) => k === 'path').length > 1) throw oneServer('it gives several socket paths')
+  if (!parsed.hostname && (env.PGHOST ?? '').includes(',')) throw oneServer('PGHOST lists several hosts')
+  // target_session_attrs makes postgres.js probe the server (SHOW
+  // transaction_read_only, pg_is_in_recovery()) before anything else; tests
+  // don't need it
+  if (keys.includes('target_session_attrs'))
+    throw new Error('feather-testing-postgres: target_session_attrs is not supported in a test database URL')
+  if (env.PGTARGETSESSIONATTRS)
+    throw new Error('feather-testing-postgres: PGTARGETSESSIONATTRS is set — target_session_attrs is not supported for test databases')
   for (const key of parsed.searchParams.keys())
     if (DATABASE_SELECTORS.has(key.toLowerCase()))
       throw new Error(
