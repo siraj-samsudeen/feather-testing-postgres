@@ -287,6 +287,40 @@ export function engineTxContract({ describe, test, expect, beforeAll, afterAll, 
       expect(await titles()).toEqual(['B', 'after'])
     })
 
+    test('a plain write while another request’s transaction is open is not swept into its rollback', async () => {
+      const results = await Promise.allSettled([
+        t.db.transaction(async (tx: any) => {
+          await tx.insert(todos).values({ title: 'in the rolled-back transaction' })
+          await tick()
+          await tick()
+          throw new Error('request A fails')
+        }),
+        (async () => {
+          await tick()
+          await t.db.insert(todos).values({ title: 'plain write via db' })
+        })(),
+        (async () => {
+          await tick()
+          await t.sql`insert into todos (title) values ('plain write via sql')`
+        })(),
+      ])
+      expect(results.map((r) => r.status)).toEqual(['rejected', 'fulfilled', 'fulfilled'])
+      expect((await titles()).sort()).toEqual(['plain write via db', 'plain write via sql'])
+    })
+
+    test('the outer db and sql inside a transaction callback run inside it (no deadlock)', async () => {
+      await t.db.transaction(async (tx: any) => {
+        await tx.insert(todos).values({ title: 'inside' })
+        expect((await t.db.select().from(todos)).length).toBe(1)
+        const [{ n }] = await t.sql<{ n: number }>`select count(*)::int as n from todos`
+        expect(n).toBe(1)
+        await tx.transaction(async () => {
+          expect((await t.db.select().from(todos)).length).toBe(1)
+        })
+      })
+      expect(await titles()).toEqual(['inside'])
+    })
+
     test('refuses a second open test (sequential tests only)', async () => {
       await expect(fdb.beginTest()).rejects.toThrow(/sequentially/)
     })

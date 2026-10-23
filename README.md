@@ -100,7 +100,15 @@ test('lists todos', async () => {
 ```
 
 `app.listen(0)` works too: a browser test's parallel requests queue on the
-test's one transaction and see its fixture rows. (Elysia's `handle` needs a
+test's one transaction and see its fixture rows.
+
+**Under `tx`, concurrent requests are serialised.** Everything in a test shares
+one transaction, and the app's transactions are SAVEPOINTs in it, so work in
+flight together would otherwise interleave. A transaction waits for its open
+siblings and settles only after its own child transactions (children still
+queued when it fails are cancelled with a clear error); a plain query through
+`db` or `sql` waits for transactions open outside it, and runs at once inside
+the transaction whose callback issued it. `raw` is not serialised. (Elysia's `handle` needs a
 URL whose host is at least as long as `localhost`; `http://app/x` misroutes.)
 
 ### The API

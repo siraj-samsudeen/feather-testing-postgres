@@ -93,7 +93,7 @@ export interface FeatherDb<TDb = any> {
 interface Conn {
   sql: SqlRunner
   /** Runs fn in a transaction that the caller controls through `release`. */
-  hold(): Promise<{ tx: unknown; client: unknown; sql: SqlRunner; release(): Promise<void> }>
+  hold(): Promise<{ tx: unknown; client: unknown; sql: SqlRunner; sched: Scheduler; release(): Promise<void> }>
   /** The client drizzle should be built over when no test transaction is held. */
   client: unknown
   kind: 'bun' | 'postgres-js' | 'pglite'
@@ -140,42 +140,68 @@ function templateToText(strings: TemplateStringsArray, values: unknown[]): strin
 }
 
 /** Bun.sql and postgres.js: a tagged-template client. */
-function taggedSql(client: any): SqlRunner {
+function taggedSql(client: any, sched?: Scheduler): SqlRunner {
+  const q = <T>(fn: () => T | PromiseLike<T>) => (sched ? sched.query(fn) : Promise.resolve().then(fn))
   const run = (async (strings: TemplateStringsArray, ...values: unknown[]) =>
-    Array.from(await client(strings, ...values))) as SqlRunner
-  run.unsafe = async (text, params) => Array.from(await client.unsafe(text, params ?? []))
+    Array.from(await q(() => client(strings, ...values)))) as SqlRunner
+  run.unsafe = async (text, params) => Array.from(await q(() => client.unsafe(text, params ?? [])))
   return run
 }
 
 /** PGlite: query(text, params). */
-function pgliteSql(client: any): SqlRunner {
+function pgliteSql(client: any, sched?: Scheduler): SqlRunner {
+  const q = <T>(fn: () => T | PromiseLike<T>) => (sched ? sched.query(fn) : Promise.resolve().then(fn))
   const run = (async (strings: TemplateStringsArray, ...values: unknown[]) =>
-    (await client.query(templateToText(strings, values), values)).rows) as SqlRunner
-  run.unsafe = async (text, params) => (await client.query(text, params ?? [])).rows
+    (await q(() => client.query(templateToText(strings, values), values))).rows) as SqlRunner
+  run.unsafe = async (text, params) => (await q(() => client.query(text, params ?? []))).rows
   return run
 }
 
-/** Serialises sibling app transactions at every level of one test handle.
- * Under `tx` every app transaction is a SAVEPOINT on the test's single
- * connection, so siblings in flight together interleave (releasing one drops
- * the other; rolling one back undoes the other's writes). Each transaction is
- * a node with its own queue: a new transaction queues behind its siblings
- * under its parent — the innermost transaction running in the current async
- * context, else the handle it was called on — and opens through the parent's
- * real handle. So `tx.transaction()` and the outer `db.transaction()` called
- * inside a transaction both nest under it, and nesting never waits on itself. */
-function serialisingDrizzle(rootDb: any): any {
-  interface Node {
-    real: any
-    /** The node's children: each queues behind the previous one. */
-    tail: Promise<unknown>
-    /** Set once the node's own callback has failed: children not yet started
-     * are cancelled rather than run inside a savepoint about to roll back. */
-    failed: boolean
+/** One node per open transaction (the root is the test itself). */
+interface TxNode {
+  real: any
+  /** Work queued under this node: its child transactions, in order. */
+  tail: Promise<unknown>
+  /** Set once the node's own callback has failed: children not yet started
+   * are cancelled rather than run inside a savepoint about to roll back. */
+  failed: boolean
+  /** The transaction machinery's own SQL (SAVEPOINT / RELEASE / ROLLBACK TO). */
+  passthrough?: boolean
+}
+
+const OPENING: TxNode = { real: null, tail: Promise.resolve(), failed: false, passthrough: true }
+
+/** Serialises everything that shares one test transaction. Under `tx` every
+ * app transaction is a SAVEPOINT on the test's single connection, so work in
+ * flight together interleaves: siblings release or roll back each other's
+ * savepoints, and a plain write lands inside whichever savepoint happens to be
+ * open (and vanishes with it). So:
+ * - a transaction queues behind its siblings under its parent — the innermost
+ *   transaction running in the current async context, else the handle it was
+ *   called on — and settles only after its own children have;
+ * - a plain query (db or sql) waits for the transactions open under its
+ *   context: outside any, until they finish; inside one, it runs in that
+ *   transaction (after that transaction's own children), never deadlocking.
+ * Concurrent requests in one test are therefore serialised. */
+class Scheduler {
+  readonly active = new AsyncLocalStorage<TxNode>()
+  readonly root: TxNode = { real: null, tail: Promise.resolve(), failed: false }
+
+  query<T>(fn: () => T | PromiseLike<T>): Promise<T> {
+    const n = this.active.getStore() ?? this.root
+    if (n.passthrough) return (async () => fn())()
+    return n.tail.then(fn)
   }
-  const node = (real: any): Node => ({ real, tail: Promise.resolve(), failed: false })
-  const active = new AsyncLocalStorage<Node>()
-  const wrap = (real: any, own: Node): any =>
+}
+
+function newNode(real: any): TxNode {
+  return { real, tail: Promise.resolve(), failed: false }
+}
+
+function serialisingDrizzle(rootDb: any, sched: Scheduler): any {
+  const { active } = sched
+  sched.root.real = rootDb
+  const wrap = (real: any, own: TxNode): any =>
     new Proxy(real, {
       get(target, prop) {
         if (prop === 'transaction')
@@ -186,24 +212,26 @@ function serialisingDrizzle(rootDb: any): any {
                 throw new Error(
                   'feather-testing-postgres: transaction cancelled — its parent transaction failed before it started',
                 )
-              return parent.real.transaction(async (inner: any) => {
-                const self = node(inner)
-                let result: unknown
-                try {
-                  result = await active.run(self, () => fn(wrap(inner, self)))
-                } catch (e) {
-                  // Cancel children still queued, let a running one finish
-                  // (it rolls back its own savepoint), then fail: the
-                  // savepoint is never released or rolled back under them.
-                  self.failed = true
+              return active.run(OPENING, () =>
+                parent.real.transaction(async (inner: any) => {
+                  const self = newNode(inner)
+                  let result: unknown
+                  try {
+                    result = await active.run(self, () => fn(wrap(inner, self)))
+                  } catch (e) {
+                    // Cancel children still queued, let a running one finish
+                    // (it rolls back its own savepoint), then fail: the
+                    // savepoint is never released or rolled back under them.
+                    self.failed = true
+                    await self.tail
+                    throw e
+                  }
+                  // Settle only after every child has: a parent never
+                  // finishes while a child's savepoint is open.
                   await self.tail
-                  throw e
-                }
-                // Settle only after every child has: a parent never finishes
-                // while a child's savepoint is open.
-                await self.tail
-                return result
-              }, config)
+                  return result
+                }, config),
+              )
             })
             parent.tail = run.catch(() => {})
             return run
@@ -212,33 +240,48 @@ function serialisingDrizzle(rootDb: any): any {
         return typeof v === 'function' ? v.bind(target) : v
       },
     })
-  return wrap(rootDb, node(rootDb))
+  return wrap(rootDb, sched.root)
 }
 
 /** A Bun.sql / postgres.js transaction handle whose `begin` opens a SAVEPOINT,
  * so drizzle's `db.transaction()` nests instead of issuing BEGIN. */
-function savepointingTaggedTx(tx: any, root: any): unknown {
-  return new Proxy(tx, {
-    get(target, prop) {
-      // drizzle's postgres-js driver installs parsers on client.options; a
-      // transaction shares its root's connection and options.
-      if (prop === 'options' && target.options === undefined) return root.options
-      if (prop === 'begin')
-        return (a: unknown, b?: unknown) => target.savepoint(typeof a === 'function' ? a : b)
-      const v = target[prop]
-      return typeof v === 'function' ? v.bind(target) : v
-    },
-    apply: (target, _this, args) => target(...args),
-  })
+function savepointingTaggedTx(tx: any, root: any, sched: Scheduler): unknown {
+  const savepoint = (target: any) => (a: unknown, b?: unknown) => {
+    const fn = (typeof a === 'function' ? a : b) as (h: unknown) => unknown
+    // the handle drizzle runs the transaction's queries on: gated as well
+    return target.savepoint((h: any) => fn(adapt(h)))
+  }
+  const adapt = (handle: any): any =>
+    new Proxy(handle, {
+      get(target, prop) {
+        // drizzle's postgres-js driver installs parsers on client.options; a
+        // transaction shares its root's connection and options.
+        if (prop === 'options' && target.options === undefined) return root.options
+        if (prop === 'begin' || prop === 'savepoint') return savepoint(target)
+        if (prop === 'unsafe')
+          return (query: string, params?: unknown[]) => {
+            // drizzle calls client.unsafe(q, p) and client.unsafe(q, p).values()
+            const exec = (f: (r: any) => unknown) => sched.query(() => f(target.unsafe(query, params)))
+            return {
+              values: () => exec((r) => r.values()),
+              then: (ok: any, ko: any) => exec((r) => r).then(ok, ko),
+            }
+          }
+        const v = target[prop]
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+      apply: (target, _this, args) => sched.query(() => target(...args)),
+    })
+  return adapt(tx)
 }
 
 /** A PGlite transaction whose `transaction()` opens a SAVEPOINT (drizzle's
  * pglite session calls client.transaction for db.transaction()). */
-function savepointingPgliteTx(tx: any): unknown {
+function savepointingPgliteTx(tx: any, sched: Scheduler): unknown {
   let n = 0
   const client: any = {
-    query: (...a: unknown[]) => tx.query(...a),
-    exec: (...a: unknown[]) => tx.exec(...a),
+    query: (...a: unknown[]) => sched.query(() => tx.query(...a)),
+    exec: (...a: unknown[]) => sched.query(() => tx.exec(...a)),
     async transaction(fn: (c: unknown) => Promise<unknown>) {
       const name = `feather_sp_${++n}`
       await tx.query(`savepoint ${name}`)
@@ -276,7 +319,8 @@ async function connectPostgres(url: string, driver: PostgresDriver, max = 2): Pr
     sql: taggedSql(root),
     async hold() {
       const { tx, release } = await holdOpen((fn) => root.begin(fn))
-      return { tx, client: savepointingTaggedTx(tx, root), sql: taggedSql(tx), release }
+      const sched = new Scheduler()
+      return { tx, client: savepointingTaggedTx(tx, root, sched), sql: taggedSql(tx, sched), sched, release }
     },
     async close() {
       if (driver === 'bun') await root.close()
@@ -301,7 +345,8 @@ async function bootPglite(options: Record<string, unknown> = {}): Promise<Conn &
     sql: pgliteSql(pg),
     async hold() {
       const { tx, release } = await holdOpen((fn) => pg.transaction(fn))
-      return { tx, client: savepointingPgliteTx(tx), sql: pgliteSql(tx), release }
+      const sched = new Scheduler()
+      return { tx, client: savepointingPgliteTx(tx, sched), sql: pgliteSql(tx, sched), sched, release }
     },
     close: () => pg.close(),
   }
@@ -541,7 +586,7 @@ export function createFeatherDb<TDb = any>(options: FeatherDbOptions = {}): Feat
         if (strategy === 'tx') {
           const h = await conn!.hold()
           end = h.release
-          return { db: drz ? serialisingDrizzle(makeDb(h.client)) : makeDb(h.client), sql: h.sql, raw: h.tx }
+          return { db: drz ? serialisingDrizzle(makeDb(h.client), h.sched) : makeDb(h.client), sql: h.sql, raw: h.tx }
         }
         if (engine === 'pglite') {
           const c = await bootPglite({ ...options.pglite, loadDataDir: snapshot })
