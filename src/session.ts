@@ -35,6 +35,9 @@ const DEFAULT_TIMEOUT = 3000
 
 const j = (s: unknown) => JSON.stringify(s)
 
+/** How core prints a secret value. */
+const HIDDEN_VALUE = '••••••'
+
 const normalize = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim()
 
 /** The visible name of a clickable: its text, or an input's `value`. */
@@ -194,9 +197,15 @@ export class DomDriver extends RTLDriver {
     if (content.includes(text)) throw new Error(`Text ${j(text)} IS on the page but should not be`)
   }
 
+  /** A longer print than core's, with password values hidden as core hides
+   * them: React writes a controlled input's value into its `value` attribute. */
   override async debug(): Promise<void> {
+    const copy = this.rootElement().cloneNode(true) as HTMLElement
+    for (const input of Array.from(copy.querySelectorAll('input[type="password"]'))) {
+      if (input.hasAttribute('value')) input.setAttribute('value', HIDDEN_VALUE)
+    }
     // eslint-disable-next-line no-console
-    console.log(prettyDOM(this.rootElement(), 20000))
+    console.log(prettyDOM(copy, 20000))
   }
 }
 
