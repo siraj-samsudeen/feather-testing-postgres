@@ -131,6 +131,11 @@ export class DomDriver extends RTLDriver {
         const sibling = l.parentElement?.querySelector('input, textarea, select')
         if (sibling && isFormControl(sibling)) return sibling as HTMLElement
       }
+      // a control named by its own aria-label
+      for (const control of Array.from(root.querySelectorAll('[aria-label]'))) {
+        if (isFormControl(control) && normalize(control.getAttribute('aria-label')) === label)
+          return control as HTMLElement
+      }
       // placeholder fallback
       const byPlaceholder = root.querySelector(`[placeholder=${JSON.stringify(label)}]`)
       if (byPlaceholder) return byPlaceholder as HTMLElement
