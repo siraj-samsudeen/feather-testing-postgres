@@ -398,3 +398,35 @@ describe('verbs core 0.6 adds', () => {
     expect(error!.message).not.toContain('hunter2')
   })
 })
+
+describe('secrets', () => {
+  it('fillIn passes the sensitive option through to core', async () => {
+    render(<WrapperForm />)
+    const error = await createSession()
+      .fillIn('Subject', 'recovery phrase words', { sensitive: true })
+      .assertText('never shown')
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).toContain("fillIn('Subject', '••••••')")
+  })
+
+  it('debug() hides a password input’s value', async () => {
+    function Login() {
+      const [pw, setPw] = useState('')
+      return (
+        <div>
+          <label>Code</label>
+          <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
+        </div>
+      )
+    }
+    render(<Login />)
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await createSession().fillIn('Code', 'hunter2').debug()
+    const printed = spy.mock.calls.map((c) => String(c[0])).join('\n')
+    spy.mockRestore()
+    expect(printed).not.toContain('hunter2')
+  })
+})
