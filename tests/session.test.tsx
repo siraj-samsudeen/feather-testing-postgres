@@ -85,7 +85,7 @@ describe('label lookup', () => {
         () => null,
         (e: unknown) => e as StepError,
       )
-    expect(error!.message).toContain('Could not find a field labelled "Nope"')
+    expect(error!.message).toContain("no field labelled 'Nope'")
   })
 
   it('selectOption and check reach the same controls', async () => {
@@ -291,7 +291,8 @@ describe('chain failures', () => {
 
     expect(error).toBeInstanceOf(StepError)
     const msg = error!.message
-    expect(msg).toContain("[ok] fillIn('Subject', 'Sales mismatch')")
+    // Core 0.7+ never prints a fillIn value in the chain.
+    expect(msg).toContain("[ok] fillIn('Subject', '••••••')")
     expect(msg).toContain("[ok] selectOption('Priority', 'High')")
     expect(msg).toContain(">>> [FAILED] refuteText('Subject')")
     expect(msg).toContain("[skipped] assertText('never reached')")
@@ -308,7 +309,7 @@ describe('chain failures', () => {
         () => null,
         (e: unknown) => e as StepError,
       )
-    expect(error!.message).toContain("[ok] fillIn('Subject', 'first chain')")
+    expect(error!.message).toContain("[ok] fillIn('Subject', '••••••')")
     expect(error!.message).toContain(">>> [FAILED] assertText('never rendered')")
   })
 })
