@@ -86,7 +86,14 @@ function isFormControl(el: Element): boolean {
  *   instead of clicking into the void, the most common false pass in a form
  *   test.
  * - `assertText` / `refuteText` — containment checks over the rendered text, so
- *   `assertText('TICK-')` can assert a generated id's prefix.
+ *   `assertText('TICK-')` can assert a generated id's prefix. Both wait within
+ *   the step's budget: `refuteText` until the text is gone.
+ * - `fillIn` — core's, except inside a shadow root, where user-event's
+ *   `clear()` cannot focus the field.
+ *
+ * Every lookup searches core's `scopeRoots()`: inside `within()` a shadow
+ * host, that is the host's open shadow root as well as its light-DOM
+ * (slotted) children.
  */
 export class DomDriver extends RTLDriver {
   constructor(opts: SessionOptions = {}, user?: UserApi) {
@@ -95,6 +102,20 @@ export class DomDriver extends RTLDriver {
 
   protected override scoped(element: HTMLElement): TestDriver<RTLStepContext> {
     return new DomDriver({ root: element, timeout: this.timeout }, this.user)
+  }
+
+  /** Every element `selector` matches in scope: under the scope element and,
+   * when it is a shadow host, in its open shadow root. Light-DOM children a
+   * host slots in are under the element, so they are in scope too. */
+  protected all<T extends Element = HTMLElement>(selector: string): T[] {
+    return this.scopeRoots().flatMap((r) => Array.from(r.querySelectorAll<T>(selector)))
+  }
+
+  /** The scope's text, its shadow tree's included. */
+  protected scopeText(): string {
+    return this.scopeRoots()
+      .map((r) => r.textContent ?? '')
+      .join(' ')
   }
 
   /** Retry a lookup until it yields an element or the timeout expires. */
@@ -122,8 +143,7 @@ export class DomDriver extends RTLDriver {
    * its placeholder. */
   protected override findField(label: string, opts?: AssertionOptions): Promise<HTMLElement> {
     return this.find(`a field labelled ${j(label)}`, () => {
-      const root = this.rootElement()
-      for (const l of Array.from(root.querySelectorAll('label'))) {
+      for (const l of this.all('label')) {
         // A trailing "*" is a required marker, not part of the field's name.
         const text = normalize(labelText(l)).replace(/\s*\*$/, '')
         if (text !== label) continue
@@ -136,24 +156,24 @@ export class DomDriver extends RTLDriver {
         if (sibling && isFormControl(sibling)) return sibling as HTMLElement
       }
       // a control named by its own aria-label
-      for (const control of Array.from(root.querySelectorAll('[aria-label]'))) {
+      for (const control of this.all('[aria-label]')) {
         if (isFormControl(control) && normalize(control.getAttribute('aria-label')) === label)
           return control as HTMLElement
       }
       // a control named by the elements its aria-labelledby points at
-      for (const control of Array.from(root.querySelectorAll('[aria-labelledby]'))) {
+      for (const control of this.all('[aria-labelledby]')) {
         if (!isFormControl(control)) continue
+        // ids resolve in the control's own tree: a shadow root, or the document
+        const tree = control.getRootNode() as Document | ShadowRoot
         const name = (control.getAttribute('aria-labelledby') ?? '')
           .split(/\s+/)
-          .map((id) => control.ownerDocument.getElementById(id))
+          .map((id) => tree.getElementById(id))
           .map((el) => (el ? labelText(el) : ''))
           .join(' ')
         if (normalize(name) === label) return control as HTMLElement
       }
       // placeholder fallback
-      const byPlaceholder = root.querySelector(`[placeholder=${JSON.stringify(label)}]`)
-      if (byPlaceholder) return byPlaceholder as HTMLElement
-      return null
+      return this.all(`[placeholder=${JSON.stringify(label)}]`)[0] ?? null
     }, opts)
   }
 
@@ -172,7 +192,7 @@ export class DomDriver extends RTLDriver {
    * after the visible text, so a name a user can read still wins. */
   private byAriaLabel(selector: string, name: string): HTMLElement | null {
     return (
-      Array.from(this.rootElement().querySelectorAll<HTMLElement>(selector)).find(
+      this.all(selector).find(
         (el) => normalize(el.getAttribute('aria-label')) === name,
       ) ?? null
     )
@@ -180,19 +200,28 @@ export class DomDriver extends RTLDriver {
 
   override async clickButton(name: string, opts?: AssertionOptions): Promise<void> {
     const el = await this.find(`a button ${j(name)}`, () =>
-      this.byName(
-        Array.from(
-          this.rootElement().querySelectorAll<HTMLElement>(
-            'button, [role="button"], input[type="submit"]',
-          ),
-        ),
-        name,
-      ) ?? this.byAriaLabel('button, [role="button"], input[type="submit"]', name),
+      this.byName(this.all('button, [role="button"], input[type="submit"]'), name) ?? this.byAriaLabel('button, [role="button"], input[type="submit"]', name),
       opts,
     )
     if (el instanceof HTMLButtonElement && el.disabled)
       throw new Error(`Button ${j(name)} is disabled — a user could not click it`)
     await this.user.click(el)
+  }
+
+  /** Core's fillIn, except for a field inside a shadow root: user-event's
+   * clear() requires `document.activeElement` to be the field, and for a
+   * shadow field it is the host. There the old value is selected and typed
+   * over instead (an empty value is a Backspace over it). */
+  override async fillIn(label: string, value: string, opts?: AssertionOptions): Promise<void> {
+    const field = await this.findField(label, opts)
+    if (!(field.getRootNode() instanceof ShadowRoot)) return super.fillIn(label, value, opts)
+    this.lastFilledField = field
+    const old = (field as HTMLInputElement | HTMLTextAreaElement).value ?? ''
+    await this.user.type(field, value ? value.replace(/[{[]/g, '$&$&') : '{Backspace}', {
+      initialSelectionStart: 0,
+      initialSelectionEnd: old.length,
+    })
+    this.lastFormElement = field.closest('form')
   }
 
   /** By label, not by accessible name: a radio whose label is a wrapper
@@ -209,7 +238,7 @@ export class DomDriver extends RTLDriver {
   override async clickLink(name: string, opts?: AssertionOptions): Promise<void> {
     const el = await this.find(
       `a link ${j(name)}`,
-      () => this.byName(Array.from(this.rootElement().querySelectorAll<HTMLElement>('a')), name),
+      () => this.byName(this.all('a'), name),
       opts,
     )
     await this.user.click(el)
@@ -217,9 +246,8 @@ export class DomDriver extends RTLDriver {
 
   override async click(text: string, opts?: AssertionOptions): Promise<void> {
     const el = await this.find(`an element with text ${j(text)}`, () => {
-      const all = Array.from(this.rootElement().querySelectorAll<HTMLElement>('*'))
       // innermost element whose own text matches
-      const matches = all.filter((n) => normalize(n.textContent).includes(text))
+      const matches = this.all('*').filter((n) => normalize(n.textContent).includes(text))
       return matches.length ? matches[matches.length - 1] : null
     }, opts)
     await this.user.click(el)
@@ -228,8 +256,7 @@ export class DomDriver extends RTLDriver {
   override async assertText(text: string, opts?: AssertionOptions): Promise<void> {
     await waitFor(
       () => {
-        const content = this.rootElement().textContent ?? ''
-        if (!content.includes(text)) throw new Error(`Text ${j(text)} not found on the page`)
+        if (!this.scopeText().includes(text)) throw new Error(`Text ${j(text)} not found on the page`)
       },
       { timeout: this.budget(opts) },
     )
@@ -241,7 +268,7 @@ export class DomDriver extends RTLDriver {
     const timeout = this.budget(opts)
     await waitFor(
       () => {
-        if ((this.rootElement().textContent ?? '').includes(text))
+        if (this.scopeText().includes(text))
           throw new Error(`refuteText('${text}'): still present after ${timeout} ms in the scope's text`)
       },
       { timeout, onTimeout: (error) => error },

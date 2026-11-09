@@ -616,3 +616,113 @@ describe('label lookup: nesting and ARIA names', () => {
     await createSession().assertOptions('Store', ['No store', 'Keelkattalai Store', 'Velachery Store'])
   })
 })
+
+// Featherbase's bar and sidebar are custom elements: the bar keeps its
+// controls in an open shadow root, the sidebar draws its heading there and
+// slots its rows in as light-DOM children of the host.
+class FeatherbaseBar extends HTMLElement {
+  constructor() {
+    super()
+    const shadow = this.attachShadow({ mode: 'open' })
+    shadow.innerHTML = `
+      <div class="search"><label>Search</label><input /></div>
+      <span id="store-label">Store</span>
+      <select aria-labelledby="store-label"><option>All</option><option>Velachery</option></select>
+      <button class="apply">Apply</button>
+      <button class="close" aria-label="Close filters">×</button>
+      <span class="status"></span>`
+    shadow.querySelector('.apply')!.addEventListener('click', () => {
+      shadow.querySelector('.status')!.textContent = 'Filter applied'
+    })
+    shadow.querySelector('.close')!.addEventListener('click', () => {
+      shadow.querySelector('.status')!.textContent = 'Filters closed'
+    })
+  }
+}
+
+class FeatherbaseSidebar extends HTMLElement {
+  constructor() {
+    super()
+    this.attachShadow({ mode: 'open' }).innerHTML = `<h2>Navigation</h2><nav><slot></slot></nav>`
+  }
+}
+
+if (!customElements.get('featherbase-bar')) customElements.define('featherbase-bar', FeatherbaseBar)
+if (!customElements.get('featherbase-sidebar'))
+  customElements.define('featherbase-sidebar', FeatherbaseSidebar)
+
+function Shell({ onTasks }: { onTasks?: () => void }) {
+  return (
+    <div>
+      {React.createElement('featherbase-bar')}
+      {React.createElement(
+        'featherbase-sidebar',
+        null,
+        <a href="#tasks" onClick={(e) => { e.preventDefault(); onTasks?.() }}>Tasks</a>,
+        <a href="#stores">Stores</a>,
+      )}
+    </div>
+  )
+}
+
+describe('within() a shadow host', () => {
+  it('clicks a button in its shadow root and sees the text that click shows', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) =>
+      s.clickButton('Apply').assertText('Filter applied'),
+    )
+  })
+
+  it('clicks a shadow button by its aria-label', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) =>
+      s.clickButton('Close filters').assertText('Filters closed'),
+    )
+  })
+
+  it('click() reaches text in the shadow root', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) => s.click('Apply').assertText('Filter applied'))
+  })
+
+  it('fillIn reaches a field labelled by a wrapper sibling in the shadow root', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) =>
+      s.fillIn('Search', 'tickets').assertValue('Search', 'tickets'),
+    )
+  })
+
+  it('fillIn with an empty value clears a shadow field', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) =>
+      s.fillIn('Search', 'tickets').fillIn('Search', '').assertValue('Search', ''),
+    )
+  })
+
+  it('selectOption reaches a shadow select named by aria-labelledby', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) =>
+      s.selectOption('Store', 'Velachery').assertSelected('Store', 'Velachery'),
+    )
+  })
+
+  it('refuteText sees text in the shadow root', async () => {
+    render(<Shell />)
+    const error = await createSession()
+      .within('featherbase-bar', (s) => s.refuteText('Apply', { timeout: 100 }))
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).toContain("refuteText('Apply'): still present")
+  })
+
+  it('reaches the shadow heading and the slotted rows of one host', async () => {
+    const onTasks = vi.fn()
+    render(<Shell onTasks={onTasks} />)
+    await createSession().within('featherbase-sidebar', (s) =>
+      s.assertText('Navigation').clickLink('Tasks'),
+    )
+    expect(onTasks).toHaveBeenCalled()
+  })
+})
