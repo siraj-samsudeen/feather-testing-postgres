@@ -2,6 +2,44 @@
 
 Releases follow [semantic versioning](https://semver.org/).
 
+## 0.3.0
+
+- **Depends on [`feather-testing-core`](https://github.com/siraj-samsudeen/feather-testing-core)
+  `^0.6.0`** (was `^0.4.0`). The DOM adapter gains what core 0.5 and 0.6 add:
+  - `assertExactText(text, opts?)`: the current scope's whole normalized text
+    equals `text`. Use it inside `within()`.
+  - `assertAttribute(name, value?, opts?)` / `refuteAttribute(name, opts?)`
+    on the current scope.
+  - `{ timeout }` on those three.
+  - `fillIn(label, value, { sensitive: true })`, and core's redaction: a
+    value typed into a password field, or into a field whose label looks
+    secret, shows as `'••••••'` in the chain and its failure report.
+  - `reload`, `assertComputedStyle`, `assertNoHorizontalOverflow`,
+    `assertHorizontalOverflow`, `assertHorizontallyContained` and
+    `scrollToHorizontalEnd` throw `BrowserOnlyVerbError`: jsdom has no
+    navigation, stylesheets or layout.
+  - **Behaviour change:** the chain shows a password field's value as
+    `'••••••'`. Tests that match on the printed value need the hidden form.
+- **Fixed:** `debug()` printed a password input's value. It now hides it as
+  core does, and keeps this adapter's longer print.
+- **Label lookup** for `fillIn`, `selectOption`, `check`/`uncheck`/`choose`,
+  `upload` and the `assertValue`/`assertChecked`/`assertSelected`/
+  `assertOptions` family now also finds:
+  - a control nested in its label, named by the label's own text:
+    `<label>Store<select>…</select></label>` is "Store", not "Store" plus every
+    option. A button inside a label (Featherbase's glossary "?") is left out
+    of its name too. Before, such labels matched nothing;
+  - a form control named by its `aria-label` (Tasker's "Task store");
+  - a form control named by `aria-labelledby` (Featherbase's form fields and
+    bar pickers).
+
+  The wrapper-sibling label, the required-marker strip and the placeholder
+  fallback are unchanged. A label still wins over an ARIA name, and the
+  placeholder is still last.
+- `clickButton(name)` falls back to a button's `aria-label` after the exact
+  and containing visible-text matches: Featherbase's "Tick all" button is
+  `clickButton('Tick all in the list')`.
+
 ## 0.2.0
 
 - **Breaking:** `seed(table, values)` now posts to `/api/save_row` with

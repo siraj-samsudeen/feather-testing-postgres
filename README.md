@@ -124,20 +124,41 @@ The DSL itself is
 [feather-testing-core](https://github.com/siraj-samsudeen/feather-testing-core):
 this package contributes the DOM adapter, so the same vocabulary drives a
 component test here and a Playwright E2E test there. Every core verb is
-available — `fillIn`, `selectOption`, `check`/`uncheck`/`choose`, `click`,
-`clickButton`, `clickLink`, `submit`, `upload`, `dropFile`, `assertText`,
-`refuteText`, `assertValue`, `assertChecked`/`refuteChecked`,
-`assertSelected`, `assertOptions`, `within(selector, fn)`, `step(name, fn)`,
-`debug()`. `visit`, `assertPath`, `refutePath`, `assertHas` and `refuteHas`
-throw: there is no URL bar in jsdom.
+available — `fillIn` (with `{ sensitive: true }`), `selectOption`,
+`check`/`uncheck`/`choose`, `click`, `clickButton`, `clickLink`, `submit`,
+`upload`, `dropFile`, `assertText`, `refuteText`, `assertExactText`,
+`assertAttribute`/`refuteAttribute`, `assertValue`,
+`assertChecked`/`refuteChecked`, `assertSelected`, `assertOptions`,
+`within(selector, fn)`, `step(name, fn)`, `debug()`.
+
+`assertExactText` and the attribute assertions check the current scope, so
+pair them with `within`; they take `{ timeout }`:
+
+```ts
+await session.within('.total', (t) =>
+  t.assertExactText('Total: 1').assertAttribute('data-ready').refuteAttribute('data-loading'),
+)
+```
+
+What jsdom cannot do throws rather than passing quietly. `visit`,
+`assertPath`, `refutePath`, `assertHas` and `refuteHas` throw: there is no
+URL bar in jsdom. `reload`, `assertComputedStyle`,
+`assertNoHorizontalOverflow`, `assertHorizontalOverflow`,
+`assertHorizontallyContained` and `scrollToHorizontalEnd` throw core's
+`BrowserOnlyVerbError`: they need a browser, so put them in a Playwright spec.
+
+Secrets: a value typed into a password field, into a field whose label looks
+secret ("Password", "API key", "PIN", …), or passed with
+`{ sensitive: true }` shows as `'••••••'` in the chain and its failure
+report. `debug()` hides password inputs' values the same way.
 
 Four verbs are deliberately adapted to app markup rather than textbook markup:
 
 | Verb | Adapted behaviour |
 |------|-------------------|
-| `fillIn` and every other label-addressed verb | Resolves `<label>Subject *</label>` sitting as a **sibling** of its control inside a wrapper `<div>` — no `htmlFor` needed — and ignores the trailing required marker. Falls back to a placeholder. Also accepts a number |
+| `fillIn` and every other label-addressed verb (`selectOption`, `check`/`uncheck`/`choose`, `upload`, `assertValue`, `assertChecked`, `assertSelected`, `assertOptions`) | Finds the control by, in order: a `<label>` that names it — through `htmlFor`, by nesting it (`<label>Store<select>…</select></label>`), or as a **sibling** inside a wrapper `<div>` with no `htmlFor`; its own `aria-label`; its `aria-labelledby`; then its placeholder. A label's name is its own text: the options of a nested select and the text of a button inside it (a help "?") are left out, and so is a trailing required marker (`Subject *`). `aria-label` and `aria-labelledby` count only on form controls. `fillIn` also accepts a number |
 | `choose` | By label, for the same reason: a radio with a sibling label has no accessible name |
-| `clickButton` / `clickLink` / `click` | Exact name first, then a name that *contains* it — an ordered fallback, so the lookup is never ambiguous. `clickButton` refuses a disabled button rather than clicking into the void |
+| `clickButton` / `clickLink` / `click` | Exact visible text first, then text that *contains* the name — an ordered fallback, so the lookup is never ambiguous. `clickButton` then tries a button's `aria-label` (a "Tick all" button labelled "Tick all in the list"), and refuses a disabled button rather than clicking into the void |
 | `assertText` / `refuteText` | Containment checks over the rendered text, so `assertText('TICK-')` can assert a generated id's prefix |
 
 Failures print the whole chain:

@@ -10,7 +10,8 @@
 //
 // Everything core's RTL adapter already does correctly is inherited, so verbs
 // this package never implemented — assertValue, assertChecked, assertSelected,
-// assertOptions, upload, dropFile, step() — come along for free.
+// assertOptions, assertExactText, assertAttribute, upload, dropFile, step() —
+// come along for free.
 
 import { waitFor, prettyDOM } from '@testing-library/dom'
 import type userEvent from '@testing-library/user-event'
@@ -75,7 +76,8 @@ function isFormControl(el: Element): boolean {
  * - `findField` — app labels are frequently plain `<label>Subject *</label>`
  *   siblings inside a wrapper `<div>`, with no `htmlFor` and no nesting. RTL's
  *   `findByLabelText` cannot associate those, and the trailing required-marker
- *   `*` is not part of the field's name.
+ *   `*` is not part of the field's name. Nested labels, `aria-label` and
+ *   `aria-labelledby` are resolved here too, so one lookup names every field.
  * - `choose` — by label, for the same reason: a radio whose label is a wrapper
  *   sibling has no accessible name for a role lookup to match.
  * - `clickButton` / `clickLink` / `click` — named by visible text rather than
@@ -114,8 +116,9 @@ export class DomDriver extends RTLDriver {
     }
   }
 
-  /** Label text -> its form control. Handles htmlFor-associated labels AND the
-   * common "label and input are siblings in a wrapper div" layout. */
+  /** Name -> its form control: a label (htmlFor, nested, or a wrapper
+   * sibling), then the control's aria-label, its aria-labelledby, and last
+   * its placeholder. */
   protected override findField(label: string): Promise<HTMLElement> {
     return this.find(`a field labelled ${j(label)}`, () => {
       const root = this.rootElement()
