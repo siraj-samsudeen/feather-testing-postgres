@@ -10,7 +10,8 @@
 //
 // Everything core's RTL adapter already does correctly is inherited, so verbs
 // this package never implemented — assertValue, assertChecked, assertSelected,
-// assertOptions, upload, dropFile, step() — come along for free.
+// assertOptions, assertExactText, assertAttribute, upload, dropFile, step() —
+// come along for free.
 
 import { waitFor, prettyDOM } from '@testing-library/dom'
 import type userEvent from '@testing-library/user-event'
@@ -19,7 +20,7 @@ import {
   Session as CoreSession,
   type RTLStepContext,
 } from 'feather-testing-core/rtl'
-import type { TestDriver } from 'feather-testing-core'
+import type { FillInOptions, TestDriver } from 'feather-testing-core'
 
 type UserApi = ReturnType<typeof userEvent.setup>
 
@@ -35,12 +36,27 @@ const DEFAULT_TIMEOUT = 3000
 
 const j = (s: unknown) => JSON.stringify(s)
 
+/** How core prints a secret value. */
+const HIDDEN_VALUE = '••••••'
+
 const normalize = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim()
 
 /** The visible name of a clickable: its text, or an input's `value`. */
 function clickableName(el: HTMLElement): string {
   if (el instanceof HTMLInputElement) return normalize(el.value)
   return normalize(el.textContent)
+}
+
+/** Elements whose text is a value, not a name: a label leaves them out, so
+ * `<label>Store<select>…</select></label>` is named "Store", not "Store" plus
+ * every option. The same list Testing Library's label lookup uses. */
+const NAMED_ELEMENTS = new Set(['BUTTON', 'METER', 'OUTPUT', 'PROGRESS', 'SELECT', 'TEXTAREA', 'INPUT'])
+
+/** A label's own text, without the text of controls nested inside it. */
+function labelText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
+  if (node instanceof Element && NAMED_ELEMENTS.has(node.tagName)) return ''
+  return Array.from(node.childNodes, labelText).join('')
 }
 
 function isFormControl(el: Element): boolean {
@@ -60,7 +76,8 @@ function isFormControl(el: Element): boolean {
  * - `findField` — app labels are frequently plain `<label>Subject *</label>`
  *   siblings inside a wrapper `<div>`, with no `htmlFor` and no nesting. RTL's
  *   `findByLabelText` cannot associate those, and the trailing required-marker
- *   `*` is not part of the field's name.
+ *   `*` is not part of the field's name. Nested labels, `aria-label` and
+ *   `aria-labelledby` are resolved here too, so one lookup names every field.
  * - `choose` — by label, for the same reason: a radio whose label is a wrapper
  *   sibling has no accessible name for a role lookup to match.
  * - `clickButton` / `clickLink` / `click` — named by visible text rather than
@@ -99,14 +116,15 @@ export class DomDriver extends RTLDriver {
     }
   }
 
-  /** Label text -> its form control. Handles htmlFor-associated labels AND the
-   * common "label and input are siblings in a wrapper div" layout. */
+  /** Name -> its form control: a label (htmlFor, nested, or a wrapper
+   * sibling), then the control's aria-label, its aria-labelledby, and last
+   * its placeholder. */
   protected override findField(label: string): Promise<HTMLElement> {
     return this.find(`a field labelled ${j(label)}`, () => {
       const root = this.rootElement()
       for (const l of Array.from(root.querySelectorAll('label'))) {
         // A trailing "*" is a required marker, not part of the field's name.
-        const text = normalize(l.textContent).replace(/\s*\*$/, '')
+        const text = normalize(labelText(l)).replace(/\s*\*$/, '')
         if (text !== label) continue
         if (l instanceof HTMLLabelElement && l.control) return l.control
         // control nested inside the label
@@ -115,6 +133,21 @@ export class DomDriver extends RTLDriver {
         // control as a sibling within the same wrapper
         const sibling = l.parentElement?.querySelector('input, textarea, select')
         if (sibling && isFormControl(sibling)) return sibling as HTMLElement
+      }
+      // a control named by its own aria-label
+      for (const control of Array.from(root.querySelectorAll('[aria-label]'))) {
+        if (isFormControl(control) && normalize(control.getAttribute('aria-label')) === label)
+          return control as HTMLElement
+      }
+      // a control named by the elements its aria-labelledby points at
+      for (const control of Array.from(root.querySelectorAll('[aria-labelledby]'))) {
+        if (!isFormControl(control)) continue
+        const name = (control.getAttribute('aria-labelledby') ?? '')
+          .split(/\s+/)
+          .map((id) => control.ownerDocument.getElementById(id))
+          .map((el) => (el ? labelText(el) : ''))
+          .join(' ')
+        if (normalize(name) === label) return control as HTMLElement
       }
       // placeholder fallback
       const byPlaceholder = root.querySelector(`[placeholder=${JSON.stringify(label)}]`)
@@ -133,6 +166,17 @@ export class DomDriver extends RTLDriver {
     )
   }
 
+  /** A button whose aria-label is exactly `name`: Featherbase's import wizard
+   * shows "Tick all" on a button named "Tick all in the list". Asked only
+   * after the visible text, so a name a user can read still wins. */
+  private byAriaLabel(selector: string, name: string): HTMLElement | null {
+    return (
+      Array.from(this.rootElement().querySelectorAll<HTMLElement>(selector)).find(
+        (el) => normalize(el.getAttribute('aria-label')) === name,
+      ) ?? null
+    )
+  }
+
   override async clickButton(name: string): Promise<void> {
     const el = await this.find(`a button ${j(name)}`, () =>
       this.byName(
@@ -142,7 +186,7 @@ export class DomDriver extends RTLDriver {
           ),
         ),
         name,
-      ),
+      ) ?? this.byAriaLabel('button, [role="button"], input[type="submit"]', name),
     )
     if (el instanceof HTMLButtonElement && el.disabled)
       throw new Error(`Button ${j(name)} is disabled — a user could not click it`)
@@ -194,9 +238,15 @@ export class DomDriver extends RTLDriver {
     if (content.includes(text)) throw new Error(`Text ${j(text)} IS on the page but should not be`)
   }
 
+  /** A longer print than core's, with password values hidden as core hides
+   * them: React writes a controlled input's value into its `value` attribute. */
   override async debug(): Promise<void> {
+    const copy = this.rootElement().cloneNode(true) as HTMLElement
+    for (const input of Array.from(copy.querySelectorAll('input[type="password"]'))) {
+      if (input.hasAttribute('value')) input.setAttribute('value', HIDDEN_VALUE)
+    }
     // eslint-disable-next-line no-console
-    console.log(prettyDOM(this.rootElement(), 20000))
+    console.log(prettyDOM(copy, 20000))
   }
 }
 
@@ -211,8 +261,8 @@ export class Session extends CoreSession<RTLStepContext> {
 
   /** Numbers are a convenience for numeric fields; the DOM only ever sees a
    * string. */
-  override fillIn(label: string, value: string | number): this {
-    return super.fillIn(label, String(value))
+  override fillIn(label: string, value: string | number, opts?: FillInOptions): this {
+    return super.fillIn(label, String(value), opts)
   }
 }
 

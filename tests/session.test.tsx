@@ -7,7 +7,7 @@
 import React, { useState } from 'react'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
-import { StepError } from 'feather-testing-core'
+import { StepError, BrowserOnlyVerbError } from 'feather-testing-core'
 import { Session, createSession } from '../src/session'
 
 afterEach(cleanup)
@@ -167,6 +167,24 @@ describe('clickButton / clickLink', () => {
     expect(error!.message).toContain('Button "Save" is disabled')
   })
 
+  it('clicks a button by its aria-label when its text is shorter', async () => {
+    // Featherbase's import wizard: the button reads "Tick all", and its
+    // aria-label says what it ticks.
+    function TickAll() {
+      const [msg, setMsg] = useState('')
+      return (
+        <div>
+          <button type="button" aria-label="Tick all in the list" onClick={() => setMsg('All ticked')}>
+            Tick all
+          </button>
+          <p>{msg}</p>
+        </div>
+      )
+    }
+    render(<TickAll />)
+    await createSession().clickButton('Tick all in the list').assertText('All ticked')
+  })
+
   it('clicks a link by name', async () => {
     render(<Collision />)
     await createSession().clickLink('Check').assertText('Linked!')
@@ -312,5 +330,222 @@ describe('core verbs this package never implemented', () => {
     expect(spy.mock.calls[0][0]).toContain('Main panel')
     expect(spy.mock.calls[0][0]).not.toContain('Sidebar panel')
     spy.mockRestore()
+  })
+})
+
+/** What core 0.5 and 0.6 added to the DSL, reached through this adapter. */
+function Totals() {
+  const [count, setCount] = useState(1)
+  return (
+    <div>
+      <div className="total" data-palette="ivory" data-ready="">
+        Total: {count}
+      </div>
+      <button onClick={() => setCount(10)}>Add nine</button>
+    </div>
+  )
+}
+
+describe('verbs core 0.6 adds', () => {
+  it('assertExactText compares the scope’s whole text', async () => {
+    render(<Totals />)
+    await createSession().within('.total', (t) => t.assertExactText('Total: 1'))
+  })
+
+  it('assertExactText rejects text that only contains the expected text', async () => {
+    render(<Totals />)
+    const error = await createSession()
+      .clickButton('Add nine')
+      .within('.total', (t) => t.assertExactText('Total: 1', { timeout: 100 }))
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).toContain("found 'Total: 10'")
+  })
+
+  it('assertAttribute checks the scope’s attribute value', async () => {
+    render(<Totals />)
+    await createSession().within('.total', (t) =>
+      t.assertAttribute('data-palette', 'ivory').assertAttribute('data-ready'),
+    )
+  })
+
+  it('refuteAttribute fails on an attribute the scope has', async () => {
+    render(<Totals />)
+    const error = await createSession()
+      .within('.total', (t) => t.refuteAttribute('data-palette', { timeout: 100 }))
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).toContain("expected attribute 'data-palette' to be absent")
+  })
+
+  it.each([
+    ['reload', (s: Session) => s.reload()],
+    ['assertComputedStyle', (s: Session) => s.assertComputedStyle('color', 'red')],
+    ['assertNoHorizontalOverflow', (s: Session) => s.assertNoHorizontalOverflow()],
+    ['assertHorizontalOverflow', (s: Session) => s.assertHorizontalOverflow()],
+    ['assertHorizontallyContained', (s: Session) => s.assertHorizontallyContained('.total')],
+    ['scrollToHorizontalEnd', (s: Session) => s.scrollToHorizontalEnd()],
+  ])('%s() names itself as browser-only', async (verb, run) => {
+    render(<Totals />)
+    const error = await run(createSession()).then(
+      () => null,
+      (e: unknown) => e as StepError,
+    )
+    expect(error!.cause).toBeInstanceOf(BrowserOnlyVerbError)
+    expect(error!.message).toContain(`${verb}()`)
+  })
+
+  it('hides a value typed into a password field in the failure report', async () => {
+    render(
+      <div>
+        <label>Login code</label>
+        <input type="password" />
+      </div>,
+    )
+    const error = await createSession()
+      .fillIn('Login code', 'hunter2')
+      .assertText('never shown')
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).not.toContain('hunter2')
+  })
+})
+
+describe('secrets', () => {
+  it('fillIn passes the sensitive option through to core', async () => {
+    render(<WrapperForm />)
+    const error = await createSession()
+      .fillIn('Subject', 'recovery phrase words', { sensitive: true })
+      .assertText('never shown')
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).toContain("fillIn('Subject', '••••••')")
+  })
+
+  it('debug() hides a password input’s value', async () => {
+    function Login() {
+      const [pw, setPw] = useState('')
+      return (
+        <div>
+          <label>Code</label>
+          <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
+        </div>
+      )
+    }
+    render(<Login />)
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await createSession().fillIn('Code', 'hunter2').debug()
+    const printed = spy.mock.calls.map((c) => String(c[0])).join('\n')
+    spy.mockRestore()
+    expect(printed).not.toContain('hunter2')
+  })
+})
+
+/** Tasker's task detail (example-apps/tasker/src/TaskManagement.tsx): each
+ * select sits inside its label and also carries its own aria-label. */
+function TaskDetail() {
+  const [state, setState] = useState('Not started')
+  const [store, setStore] = useState('')
+  return (
+    <div>
+      <label>
+        State
+        <select aria-label="Task state" value={state} onChange={(e) => setState(e.target.value)}>
+          {['Not started', 'In progress', 'Done'].map((s) => (
+            <option key={s}>{s}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Store
+        <select aria-label="Task store" value={store} onChange={(e) => setStore(e.target.value)}>
+          <option value="">No store</option>
+          <option value="s1">Keelkattalai Store</option>
+          <option value="s2">Velachery Store</option>
+        </select>
+      </label>
+    </div>
+  )
+}
+
+describe('label lookup: nesting and ARIA names', () => {
+  it('finds a select nested in its label, whose name leaves out the option texts', async () => {
+    render(<TaskDetail />)
+    await createSession().selectOption('State', 'In progress').assertSelected('State', 'In progress')
+  })
+
+  it('finds a select named only by its aria-label', async () => {
+    render(<TaskDetail />)
+    await createSession().selectOption('Task store', 'Velachery Store').assertSelected('Task store', 'Velachery Store')
+  })
+
+  it('finds a control named by aria-labelledby', async () => {
+    // Featherbase's bar pickers and grouped fields: a span names the control.
+    render(
+      <div>
+        <span id="view-label">View</span>
+        <select aria-labelledby="view-label" defaultValue="All">
+          <option>All</option>
+          <option>Mine</option>
+        </select>
+      </div>,
+    )
+    await createSession().selectOption('View', 'Mine').assertSelected('View', 'Mine')
+  })
+
+  it('reads a Featherbase form field whose label holds a required marker and a help button', async () => {
+    // FormView.tsx: the label wraps the name in a span the control points at,
+    // then an aria-hidden "*" and the glossary's "?" button.
+    function FormField() {
+      const [title, setTitle] = useState('')
+      const [done, setDone] = useState(false)
+      return (
+        <div>
+          <div>
+            <label htmlFor="f-title">
+              <span id="f-title-label">Title</span>
+              <span aria-hidden="true"> *</span>
+              <span>
+                <button type="button">?</button>
+              </span>
+            </label>
+            <input id="f-title" aria-labelledby="f-title-label" value={title} onChange={(e) => setTitle(e.target.value)} />
+          </div>
+          <div>
+            <label htmlFor="f-done">
+              <span id="f-done-label">Done</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                id="f-done"
+                aria-labelledby="f-done-label"
+                checked={done}
+                onChange={(e) => setDone(e.target.checked)}
+              />
+            </label>
+          </div>
+        </div>
+      )
+    }
+    render(<FormField />)
+    await createSession()
+      .fillIn('Title', 'Sales mismatch')
+      .check('Done')
+      .assertValue('Title', 'Sales mismatch')
+      .assertChecked('Done')
+  })
+
+  it('assertOptions lists a nested select’s options under its label', async () => {
+    render(<TaskDetail />)
+    await createSession().assertOptions('Store', ['No store', 'Keelkattalai Store', 'Velachery Store'])
   })
 })
