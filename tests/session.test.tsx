@@ -331,6 +331,32 @@ describe('scoping', () => {
     expect(error).toBeInstanceOf(StepError)
   })
 
+  it('within() fails, naming the count, when its selector matches several elements', async () => {
+    render(<Scoped />)
+    const error = await createSession()
+      .within('.panel', (s) => s.assertText('Main panel'), { timeout: 100 })
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).toMatch(/2 elements/)
+  })
+
+  it('within() looks its scope up again at every step, so a remounted scope still works', async () => {
+    function Wizard() {
+      const [step, setStep] = useState(1)
+      // a new key remounts the card as a new element
+      return (
+        <div className="card" key={step}>
+          <p>Step {step}</p>
+          <button onClick={() => setStep(step + 1)}>Next</button>
+        </div>
+      )
+    }
+    render(<Wizard />)
+    await createSession().within('.card', (s) => s.clickButton('Next').assertText('Step 2'))
+  })
+
   it('within() takes an async callback', async () => {
     render(<Scoped />)
     const seen: string[] = []
