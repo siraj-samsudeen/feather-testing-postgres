@@ -20,7 +20,7 @@ import {
   Session as CoreSession,
   type RTLStepContext,
 } from 'feather-testing-core/rtl'
-import type { FillInOptions, TestDriver } from 'feather-testing-core'
+import type { AssertionOptions, FillInOptions, TestDriver } from 'feather-testing-core'
 
 type UserApi = ReturnType<typeof userEvent.setup>
 
@@ -231,11 +231,17 @@ export class DomDriver extends RTLDriver {
     )
   }
 
-  override async refuteText(text: string): Promise<void> {
-    // Let pending renders settle, then require absence.
-    await new Promise((r) => setTimeout(r, 50))
-    const content = this.rootElement().textContent ?? ''
-    if (content.includes(text)) throw new Error(`Text ${j(text)} IS on the page but should not be`)
+  /** Eventually absent, as core's refute is, but by containment: passes once
+   * the scope's text no longer contains `text`, fails after the budget. */
+  override async refuteText(text: string, opts?: AssertionOptions): Promise<void> {
+    const timeout = this.budget(opts)
+    await waitFor(
+      () => {
+        if ((this.rootElement().textContent ?? '').includes(text))
+          throw new Error(`refuteText('${text}'): still present after ${timeout} ms in the scope's text`)
+      },
+      { timeout, onTimeout: (error) => error },
+    )
   }
 
   /** A longer print than core's, with password values hidden as core hides

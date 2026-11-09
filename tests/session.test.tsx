@@ -208,12 +208,42 @@ describe('assertions are containment checks', () => {
     const error = await createSession()
       .fillIn('Subject', 'x')
       .clickButton('Save')
-      .refuteText('HDT-')
+      .refuteText('HDT-', { timeout: 200 })
       .then(
         () => null,
         (e: unknown) => e as StepError,
       )
-    expect(error!.message).toContain('IS on the page but should not be')
+    expect(error!.message).toContain("refuteText('HDT-'): still present")
+  })
+})
+
+/** Shows `text` for `ms`, then removes it, as a toast or a spinner does. */
+function Fleeting({ text, ms }: { text: string; ms: number }) {
+  const [shown, setShown] = useState(true)
+  React.useEffect(() => {
+    const t = setTimeout(() => setShown(false), ms)
+    return () => clearTimeout(t)
+  }, [ms])
+  return <div>{shown && <p>{text}</p>}</div>
+}
+
+describe('refuteText waits for the text to go', () => {
+  it('passes when the text disappears within the budget', async () => {
+    render(<Fleeting text="Saving…" ms={300} />)
+    await createSession().refuteText('Saving…')
+  })
+
+  it('fails after the budget, naming the text still present', async () => {
+    render(<div><p>Draft saved</p></div>)
+    const started = Date.now()
+    const error = await createSession({ timeout: 400 })
+      .refuteText('saved')
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(Date.now() - started).toBeGreaterThanOrEqual(400)
+    expect(error!.message).toContain("refuteText('saved'): still present after 400 ms")
   })
 })
 
