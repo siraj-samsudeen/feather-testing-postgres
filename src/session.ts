@@ -101,6 +101,7 @@ export class DomDriver extends RTLDriver {
   protected async find<T extends Element>(
     describe: string,
     get: () => T | null,
+    opts?: AssertionOptions,
   ): Promise<T> {
     try {
       return await waitFor(
@@ -109,7 +110,7 @@ export class DomDriver extends RTLDriver {
           if (!el) throw new Error(`Could not find ${describe}`)
           return el
         },
-        { timeout: this.timeout, container: this.rootElement() },
+        { timeout: this.budget(opts) },
       )
     } catch (e) {
       throw new Error(`Could not find ${describe}`, { cause: e })
@@ -119,7 +120,7 @@ export class DomDriver extends RTLDriver {
   /** Name -> its form control: a label (htmlFor, nested, or a wrapper
    * sibling), then the control's aria-label, its aria-labelledby, and last
    * its placeholder. */
-  protected override findField(label: string): Promise<HTMLElement> {
+  protected override findField(label: string, opts?: AssertionOptions): Promise<HTMLElement> {
     return this.find(`a field labelled ${j(label)}`, () => {
       const root = this.rootElement()
       for (const l of Array.from(root.querySelectorAll('label'))) {
@@ -153,7 +154,7 @@ export class DomDriver extends RTLDriver {
       const byPlaceholder = root.querySelector(`[placeholder=${JSON.stringify(label)}]`)
       if (byPlaceholder) return byPlaceholder as HTMLElement
       return null
-    })
+    }, opts)
   }
 
   /** Exact name first, then a containing name — an ordered fallback, so the
@@ -177,7 +178,7 @@ export class DomDriver extends RTLDriver {
     )
   }
 
-  override async clickButton(name: string): Promise<void> {
+  override async clickButton(name: string, opts?: AssertionOptions): Promise<void> {
     const el = await this.find(`a button ${j(name)}`, () =>
       this.byName(
         Array.from(
@@ -187,6 +188,7 @@ export class DomDriver extends RTLDriver {
         ),
         name,
       ) ?? this.byAriaLabel('button, [role="button"], input[type="submit"]', name),
+      opts,
     )
     if (el instanceof HTMLButtonElement && el.disabled)
       throw new Error(`Button ${j(name)} is disabled — a user could not click it`)
@@ -196,38 +198,40 @@ export class DomDriver extends RTLDriver {
   /** By label, not by accessible name: a radio whose label is a wrapper
    * sibling has no accessible name at all, so core's role lookup would never
    * find it in the markup this adapter exists for. */
-  override async choose(label: string): Promise<void> {
-    const radio = await this.findField(label)
+  override async choose(label: string, opts?: AssertionOptions): Promise<void> {
+    const radio = await this.findField(label, opts)
     if (!(radio instanceof HTMLInputElement))
       throw new Error(`Field ${j(label)} is not an input`)
     if (!radio.checked) await this.user.click(radio)
     this.lastFormElement = radio.closest('form')
   }
 
-  override async clickLink(name: string): Promise<void> {
-    const el = await this.find(`a link ${j(name)}`, () =>
-      this.byName(Array.from(this.rootElement().querySelectorAll<HTMLElement>('a')), name),
+  override async clickLink(name: string, opts?: AssertionOptions): Promise<void> {
+    const el = await this.find(
+      `a link ${j(name)}`,
+      () => this.byName(Array.from(this.rootElement().querySelectorAll<HTMLElement>('a')), name),
+      opts,
     )
     await this.user.click(el)
   }
 
-  override async click(text: string): Promise<void> {
+  override async click(text: string, opts?: AssertionOptions): Promise<void> {
     const el = await this.find(`an element with text ${j(text)}`, () => {
       const all = Array.from(this.rootElement().querySelectorAll<HTMLElement>('*'))
       // innermost element whose own text matches
       const matches = all.filter((n) => normalize(n.textContent).includes(text))
       return matches.length ? matches[matches.length - 1] : null
-    })
+    }, opts)
     await this.user.click(el)
   }
 
-  override async assertText(text: string): Promise<void> {
+  override async assertText(text: string, opts?: AssertionOptions): Promise<void> {
     await waitFor(
       () => {
         const content = this.rootElement().textContent ?? ''
         if (!content.includes(text)) throw new Error(`Text ${j(text)} not found on the page`)
       },
-      { timeout: this.timeout, container: this.rootElement() },
+      { timeout: this.budget(opts) },
     )
   }
 

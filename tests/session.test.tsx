@@ -247,6 +247,42 @@ describe('refuteText waits for the text to go', () => {
   })
 })
 
+/** Renders its children only after `ms`, as a page waiting on the server. */
+function Late({ ms, children }: { ms: number; children: React.ReactNode }) {
+  const [shown, setShown] = useState(false)
+  React.useEffect(() => {
+    const t = setTimeout(() => setShown(true), ms)
+    return () => clearTimeout(t)
+  }, [ms])
+  return <div>{shown && children}</div>
+}
+
+describe("a step's own timeout outlasts the session's", () => {
+  it('clickButton waits for a late button', async () => {
+    const clicked = vi.fn()
+    render(<Late ms={600}><button onClick={clicked}>Approve</button></Late>)
+    await createSession({ timeout: 200 }).clickButton('Approve', { timeout: 2000 })
+    expect(clicked).toHaveBeenCalled()
+  })
+
+  it('fillIn waits for a late field', async () => {
+    render(
+      <Late ms={600}>
+        <label>Remarks</label>
+        <input />
+      </Late>,
+    )
+    await createSession({ timeout: 200 })
+      .fillIn('Remarks', 'ok', { timeout: 2000 })
+      .assertValue('Remarks', 'ok')
+  })
+
+  it('assertText waits for late text', async () => {
+    render(<Late ms={600}><p>Approved</p></Late>)
+    await createSession({ timeout: 200 }).assertText('Approved', { timeout: 2000 })
+  })
+})
+
 function Scoped() {
   return (
     <div>
