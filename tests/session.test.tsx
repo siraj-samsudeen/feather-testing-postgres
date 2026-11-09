@@ -167,6 +167,24 @@ describe('clickButton / clickLink', () => {
     expect(error!.message).toContain('Button "Save" is disabled')
   })
 
+  it('clicks a button by its aria-label when its text is shorter', async () => {
+    // Featherbase's import wizard: the button reads "Tick all", and its
+    // aria-label says what it ticks.
+    function TickAll() {
+      const [msg, setMsg] = useState('')
+      return (
+        <div>
+          <button type="button" aria-label="Tick all in the list" onClick={() => setMsg('All ticked')}>
+            Tick all
+          </button>
+          <p>{msg}</p>
+        </div>
+      )
+    }
+    render(<TickAll />)
+    await createSession().clickButton('Tick all in the list').assertText('All ticked')
+  })
+
   it('clicks a link by name', async () => {
     render(<Collision />)
     await createSession().clickLink('Check').assertText('Linked!')
