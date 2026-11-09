@@ -136,6 +136,16 @@ export class DomDriver extends RTLDriver {
         if (isFormControl(control) && normalize(control.getAttribute('aria-label')) === label)
           return control as HTMLElement
       }
+      // a control named by the elements its aria-labelledby points at
+      for (const control of Array.from(root.querySelectorAll('[aria-labelledby]'))) {
+        if (!isFormControl(control)) continue
+        const name = (control.getAttribute('aria-labelledby') ?? '')
+          .split(/\s+/)
+          .map((id) => control.ownerDocument.getElementById(id))
+          .map((el) => (el ? labelText(el) : ''))
+          .join(' ')
+        if (normalize(name) === label) return control as HTMLElement
+      }
       // placeholder fallback
       const byPlaceholder = root.querySelector(`[placeholder=${JSON.stringify(label)}]`)
       if (byPlaceholder) return byPlaceholder as HTMLElement
