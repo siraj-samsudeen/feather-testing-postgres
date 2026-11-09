@@ -463,4 +463,9 @@ describe('label lookup: nesting and ARIA names', () => {
     render(<TaskDetail />)
     await createSession().selectOption('State', 'In progress').assertSelected('State', 'In progress')
   })
+
+  it('finds a select named only by its aria-label', async () => {
+    render(<TaskDetail />)
+    await createSession().selectOption('Task store', 'Velachery Store').assertSelected('Task store', 'Velachery Store')
+  })
 })
