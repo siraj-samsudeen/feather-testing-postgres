@@ -468,4 +468,18 @@ describe('label lookup: nesting and ARIA names', () => {
     render(<TaskDetail />)
     await createSession().selectOption('Task store', 'Velachery Store').assertSelected('Task store', 'Velachery Store')
   })
+
+  it('finds a control named by aria-labelledby', async () => {
+    // Featherbase's bar pickers and grouped fields: a span names the control.
+    render(
+      <div>
+        <span id="view-label">View</span>
+        <select aria-labelledby="view-label" defaultValue="All">
+          <option>All</option>
+          <option>Mine</option>
+        </select>
+      </div>,
+    )
+    await createSession().selectOption('View', 'Mine').assertSelected('View', 'Mine')
+  })
 })
