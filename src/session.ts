@@ -163,6 +163,17 @@ export class DomDriver extends RTLDriver {
     )
   }
 
+  /** A button whose aria-label is exactly `name`: Featherbase's import wizard
+   * shows "Tick all" on a button named "Tick all in the list". Asked only
+   * after the visible text, so a name a user can read still wins. */
+  private byAriaLabel(selector: string, name: string): HTMLElement | null {
+    return (
+      Array.from(this.rootElement().querySelectorAll<HTMLElement>(selector)).find(
+        (el) => normalize(el.getAttribute('aria-label')) === name,
+      ) ?? null
+    )
+  }
+
   override async clickButton(name: string): Promise<void> {
     const el = await this.find(`a button ${j(name)}`, () =>
       this.byName(
@@ -172,7 +183,7 @@ export class DomDriver extends RTLDriver {
           ),
         ),
         name,
-      ),
+      ) ?? this.byAriaLabel('button, [role="button"], input[type="submit"]', name),
     )
     if (el instanceof HTMLButtonElement && el.disabled)
       throw new Error(`Button ${j(name)} is disabled — a user could not click it`)
