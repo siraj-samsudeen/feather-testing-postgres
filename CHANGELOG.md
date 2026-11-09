@@ -2,6 +2,35 @@
 
 Releases follow [semantic versioning](https://semver.org/).
 
+## 0.4.0
+
+- **Depends on [`feather-testing-core`](https://github.com/siraj-samsudeen/feather-testing-core)
+  `^0.8.0`** (was `^0.6.0`).
+- **Breaking:** `within(selector)` needs exactly one match, and waits for it.
+  It used to take the first match at once. A selector matching none or
+  several fails the step, naming the count: narrow the selector. The scope
+  is now looked up again at every step inside, so a remounted scope keeps
+  working.
+- **Breaking:** the chain never prints a `fillIn` value; it shows as
+  `'••••••'`, secret or not. A missing field is reported in core's words:
+  `fillIn('Nope'): no field labelled 'Nope' (or with that placeholder) was found`.
+- **Changed:** `refuteText` waits until the text is gone, within the step's
+  budget, and then fails with `refuteText('X'): still present after N ms`. It
+  used to check once after 50 ms, so text a render was about to remove failed
+  the step. It still matches by containment.
+- **Fixed:** a step's own `{ timeout }` is honoured by `assertText`,
+  `clickButton`, `clickLink`, `click`, `choose` and every label-addressed verb.
+  They used to wait for the session's timeout whatever the step asked for.
+- **New:** inside `within()` a shadow host, every lookup and text assertion
+  reaches the host's open shadow root as well as its slotted light-DOM
+  children. `aria-labelledby` ids resolve in the control's own tree, and
+  `fillIn` fills a field inside a shadow root (user-event's `clear()` cannot
+  focus one, so the value is typed over a selection).
+- `DomDriver` subclasses: `findField(label, opts?)` and the clicking verbs
+  take the step's options; `find(describe, get, opts?)` waits for
+  `this.budget(opts)`; `all(selector)` and `scopeText()` search
+  `scopeRoots()`.
+
 ## 0.3.0
 
 - **Depends on [`feather-testing-core`](https://github.com/siraj-samsudeen/feather-testing-core)

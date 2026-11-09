@@ -85,7 +85,7 @@ describe('label lookup', () => {
         () => null,
         (e: unknown) => e as StepError,
       )
-    expect(error!.message).toContain('Could not find a field labelled "Nope"')
+    expect(error!.message).toContain("no field labelled 'Nope'")
   })
 
   it('selectOption and check reach the same controls', async () => {
@@ -208,12 +208,78 @@ describe('assertions are containment checks', () => {
     const error = await createSession()
       .fillIn('Subject', 'x')
       .clickButton('Save')
-      .refuteText('HDT-')
+      .refuteText('HDT-', { timeout: 200 })
       .then(
         () => null,
         (e: unknown) => e as StepError,
       )
-    expect(error!.message).toContain('IS on the page but should not be')
+    expect(error!.message).toContain("refuteText('HDT-'): still present")
+  })
+})
+
+/** Shows `text` for `ms`, then removes it, as a toast or a spinner does. */
+function Fleeting({ text, ms }: { text: string; ms: number }) {
+  const [shown, setShown] = useState(true)
+  React.useEffect(() => {
+    const t = setTimeout(() => setShown(false), ms)
+    return () => clearTimeout(t)
+  }, [ms])
+  return <div>{shown && <p>{text}</p>}</div>
+}
+
+describe('refuteText waits for the text to go', () => {
+  it('passes when the text disappears within the budget', async () => {
+    render(<Fleeting text="Saving…" ms={300} />)
+    await createSession().refuteText('Saving…')
+  })
+
+  it('fails after the budget, naming the text still present', async () => {
+    render(<div><p>Draft saved</p></div>)
+    const started = Date.now()
+    const error = await createSession({ timeout: 400 })
+      .refuteText('saved')
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(Date.now() - started).toBeGreaterThanOrEqual(400)
+    expect(error!.message).toContain("refuteText('saved'): still present after 400 ms")
+  })
+})
+
+/** Renders its children only after `ms`, as a page waiting on the server. */
+function Late({ ms, children }: { ms: number; children: React.ReactNode }) {
+  const [shown, setShown] = useState(false)
+  React.useEffect(() => {
+    const t = setTimeout(() => setShown(true), ms)
+    return () => clearTimeout(t)
+  }, [ms])
+  return <div>{shown && children}</div>
+}
+
+describe("a step's own timeout outlasts the session's", () => {
+  it('clickButton waits for a late button', async () => {
+    const clicked = vi.fn()
+    render(<Late ms={600}><button onClick={clicked}>Approve</button></Late>)
+    await createSession({ timeout: 200 }).clickButton('Approve', { timeout: 2000 })
+    expect(clicked).toHaveBeenCalled()
+  })
+
+  it('fillIn waits for a late field', async () => {
+    render(
+      <Late ms={600}>
+        <label>Remarks</label>
+        <input />
+      </Late>,
+    )
+    await createSession({ timeout: 200 })
+      .fillIn('Remarks', 'ok', { timeout: 2000 })
+      .assertValue('Remarks', 'ok')
+  })
+
+  it('assertText waits for late text', async () => {
+    render(<Late ms={600}><p>Approved</p></Late>)
+    await createSession({ timeout: 200 }).assertText('Approved', { timeout: 2000 })
   })
 })
 
@@ -265,6 +331,32 @@ describe('scoping', () => {
     expect(error).toBeInstanceOf(StepError)
   })
 
+  it('within() fails, naming the count, when its selector matches several elements', async () => {
+    render(<Scoped />)
+    const error = await createSession()
+      .within('.panel', (s) => s.assertText('Main panel'), { timeout: 100 })
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).toMatch(/2 elements/)
+  })
+
+  it('within() looks its scope up again at every step, so a remounted scope still works', async () => {
+    function Wizard() {
+      const [step, setStep] = useState(1)
+      // a new key remounts the card as a new element
+      return (
+        <div className="card" key={step}>
+          <p>Step {step}</p>
+          <button onClick={() => setStep(step + 1)}>Next</button>
+        </div>
+      )
+    }
+    render(<Wizard />)
+    await createSession().within('.card', (s) => s.clickButton('Next').assertText('Step 2'))
+  })
+
   it('within() takes an async callback', async () => {
     render(<Scoped />)
     const seen: string[] = []
@@ -291,7 +383,8 @@ describe('chain failures', () => {
 
     expect(error).toBeInstanceOf(StepError)
     const msg = error!.message
-    expect(msg).toContain("[ok] fillIn('Subject', 'Sales mismatch')")
+    // Core 0.7+ never prints a fillIn value in the chain.
+    expect(msg).toContain("[ok] fillIn('Subject', '••••••')")
     expect(msg).toContain("[ok] selectOption('Priority', 'High')")
     expect(msg).toContain(">>> [FAILED] refuteText('Subject')")
     expect(msg).toContain("[skipped] assertText('never reached')")
@@ -308,7 +401,7 @@ describe('chain failures', () => {
         () => null,
         (e: unknown) => e as StepError,
       )
-    expect(error!.message).toContain("[ok] fillIn('Subject', 'first chain')")
+    expect(error!.message).toContain("[ok] fillIn('Subject', '••••••')")
     expect(error!.message).toContain(">>> [FAILED] assertText('never rendered')")
   })
 })
@@ -547,5 +640,115 @@ describe('label lookup: nesting and ARIA names', () => {
   it('assertOptions lists a nested select’s options under its label', async () => {
     render(<TaskDetail />)
     await createSession().assertOptions('Store', ['No store', 'Keelkattalai Store', 'Velachery Store'])
+  })
+})
+
+// Featherbase's bar and sidebar are custom elements: the bar keeps its
+// controls in an open shadow root, the sidebar draws its heading there and
+// slots its rows in as light-DOM children of the host.
+class FeatherbaseBar extends HTMLElement {
+  constructor() {
+    super()
+    const shadow = this.attachShadow({ mode: 'open' })
+    shadow.innerHTML = `
+      <div class="search"><label>Search</label><input /></div>
+      <span id="store-label">Store</span>
+      <select aria-labelledby="store-label"><option>All</option><option>Velachery</option></select>
+      <button class="apply">Apply</button>
+      <button class="close" aria-label="Close filters">×</button>
+      <span class="status"></span>`
+    shadow.querySelector('.apply')!.addEventListener('click', () => {
+      shadow.querySelector('.status')!.textContent = 'Filter applied'
+    })
+    shadow.querySelector('.close')!.addEventListener('click', () => {
+      shadow.querySelector('.status')!.textContent = 'Filters closed'
+    })
+  }
+}
+
+class FeatherbaseSidebar extends HTMLElement {
+  constructor() {
+    super()
+    this.attachShadow({ mode: 'open' }).innerHTML = `<h2>Navigation</h2><nav><slot></slot></nav>`
+  }
+}
+
+if (!customElements.get('featherbase-bar')) customElements.define('featherbase-bar', FeatherbaseBar)
+if (!customElements.get('featherbase-sidebar'))
+  customElements.define('featherbase-sidebar', FeatherbaseSidebar)
+
+function Shell({ onTasks }: { onTasks?: () => void }) {
+  return (
+    <div>
+      {React.createElement('featherbase-bar')}
+      {React.createElement(
+        'featherbase-sidebar',
+        null,
+        <a href="#tasks" onClick={(e) => { e.preventDefault(); onTasks?.() }}>Tasks</a>,
+        <a href="#stores">Stores</a>,
+      )}
+    </div>
+  )
+}
+
+describe('within() a shadow host', () => {
+  it('clicks a button in its shadow root and sees the text that click shows', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) =>
+      s.clickButton('Apply').assertText('Filter applied'),
+    )
+  })
+
+  it('clicks a shadow button by its aria-label', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) =>
+      s.clickButton('Close filters').assertText('Filters closed'),
+    )
+  })
+
+  it('click() reaches text in the shadow root', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) => s.click('Apply').assertText('Filter applied'))
+  })
+
+  it('fillIn reaches a field labelled by a wrapper sibling in the shadow root', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) =>
+      s.fillIn('Search', 'tickets').assertValue('Search', 'tickets'),
+    )
+  })
+
+  it('fillIn with an empty value clears a shadow field', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) =>
+      s.fillIn('Search', 'tickets').fillIn('Search', '').assertValue('Search', ''),
+    )
+  })
+
+  it('selectOption reaches a shadow select named by aria-labelledby', async () => {
+    render(<Shell />)
+    await createSession().within('featherbase-bar', (s) =>
+      s.selectOption('Store', 'Velachery').assertSelected('Store', 'Velachery'),
+    )
+  })
+
+  it('refuteText sees text in the shadow root', async () => {
+    render(<Shell />)
+    const error = await createSession()
+      .within('featherbase-bar', (s) => s.refuteText('Apply', { timeout: 100 }))
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).toContain("refuteText('Apply'): still present")
+  })
+
+  it('reaches the shadow heading and the slotted rows of one host', async () => {
+    const onTasks = vi.fn()
+    render(<Shell onTasks={onTasks} />)
+    await createSession().within('featherbase-sidebar', (s) =>
+      s.assertText('Navigation').clickLink('Tasks'),
+    )
+    expect(onTasks).toHaveBeenCalled()
   })
 })
