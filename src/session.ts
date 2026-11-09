@@ -19,7 +19,7 @@ import {
   Session as CoreSession,
   type RTLStepContext,
 } from 'feather-testing-core/rtl'
-import type { TestDriver } from 'feather-testing-core'
+import type { FillInOptions, TestDriver } from 'feather-testing-core'
 
 type UserApi = ReturnType<typeof userEvent.setup>
 
@@ -211,8 +211,8 @@ export class Session extends CoreSession<RTLStepContext> {
 
   /** Numbers are a convenience for numeric fields; the DOM only ever sees a
    * string. */
-  override fillIn(label: string, value: string | number): this {
-    return super.fillIn(label, String(value))
+  override fillIn(label: string, value: string | number, opts?: FillInOptions): this {
+    return super.fillIn(label, String(value), opts)
   }
 }
 
