@@ -482,4 +482,52 @@ describe('label lookup: nesting and ARIA names', () => {
     )
     await createSession().selectOption('View', 'Mine').assertSelected('View', 'Mine')
   })
+
+  it('reads a Featherbase form field whose label holds a required marker and a help button', async () => {
+    // FormView.tsx: the label wraps the name in a span the control points at,
+    // then an aria-hidden "*" and the glossary's "?" button.
+    function FormField() {
+      const [title, setTitle] = useState('')
+      const [done, setDone] = useState(false)
+      return (
+        <div>
+          <div>
+            <label htmlFor="f-title">
+              <span id="f-title-label">Title</span>
+              <span aria-hidden="true"> *</span>
+              <span>
+                <button type="button">?</button>
+              </span>
+            </label>
+            <input id="f-title" aria-labelledby="f-title-label" value={title} onChange={(e) => setTitle(e.target.value)} />
+          </div>
+          <div>
+            <label htmlFor="f-done">
+              <span id="f-done-label">Done</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                id="f-done"
+                aria-labelledby="f-done-label"
+                checked={done}
+                onChange={(e) => setDone(e.target.checked)}
+              />
+            </label>
+          </div>
+        </div>
+      )
+    }
+    render(<FormField />)
+    await createSession()
+      .fillIn('Title', 'Sales mismatch')
+      .check('Done')
+      .assertValue('Title', 'Sales mismatch')
+      .assertChecked('Done')
+  })
+
+  it('assertOptions lists a nested select’s options under its label', async () => {
+    render(<TaskDetail />)
+    await createSession().assertOptions('Store', ['No store', 'Keelkattalai Store', 'Velachery Store'])
+  })
 })
