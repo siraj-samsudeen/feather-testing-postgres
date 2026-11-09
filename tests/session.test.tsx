@@ -430,3 +430,37 @@ describe('secrets', () => {
     expect(printed).not.toContain('hunter2')
   })
 })
+
+/** Tasker's task detail (example-apps/tasker/src/TaskManagement.tsx): each
+ * select sits inside its label and also carries its own aria-label. */
+function TaskDetail() {
+  const [state, setState] = useState('Not started')
+  const [store, setStore] = useState('')
+  return (
+    <div>
+      <label>
+        State
+        <select aria-label="Task state" value={state} onChange={(e) => setState(e.target.value)}>
+          {['Not started', 'In progress', 'Done'].map((s) => (
+            <option key={s}>{s}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Store
+        <select aria-label="Task store" value={store} onChange={(e) => setStore(e.target.value)}>
+          <option value="">No store</option>
+          <option value="s1">Keelkattalai Store</option>
+          <option value="s2">Velachery Store</option>
+        </select>
+      </label>
+    </div>
+  )
+}
+
+describe('label lookup: nesting and ARIA names', () => {
+  it('finds a select nested in its label, whose name leaves out the option texts', async () => {
+    render(<TaskDetail />)
+    await createSession().selectOption('State', 'In progress').assertSelected('State', 'In progress')
+  })
+})
