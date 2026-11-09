@@ -7,7 +7,7 @@
 import React, { useState } from 'react'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
-import { StepError } from 'feather-testing-core'
+import { StepError, BrowserOnlyVerbError } from 'feather-testing-core'
 import { Session, createSession } from '../src/session'
 
 afterEach(cleanup)
@@ -312,5 +312,89 @@ describe('core verbs this package never implemented', () => {
     expect(spy.mock.calls[0][0]).toContain('Main panel')
     expect(spy.mock.calls[0][0]).not.toContain('Sidebar panel')
     spy.mockRestore()
+  })
+})
+
+/** What core 0.5 and 0.6 added to the DSL, reached through this adapter. */
+function Totals() {
+  const [count, setCount] = useState(1)
+  return (
+    <div>
+      <div className="total" data-palette="ivory" data-ready="">
+        Total: {count}
+      </div>
+      <button onClick={() => setCount(10)}>Add nine</button>
+    </div>
+  )
+}
+
+describe('verbs core 0.6 adds', () => {
+  it('assertExactText compares the scope’s whole text', async () => {
+    render(<Totals />)
+    await createSession().within('.total', (t) => t.assertExactText('Total: 1'))
+  })
+
+  it('assertExactText rejects text that only contains the expected text', async () => {
+    render(<Totals />)
+    const error = await createSession()
+      .clickButton('Add nine')
+      .within('.total', (t) => t.assertExactText('Total: 1', { timeout: 100 }))
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).toContain("found 'Total: 10'")
+  })
+
+  it('assertAttribute checks the scope’s attribute value', async () => {
+    render(<Totals />)
+    await createSession().within('.total', (t) =>
+      t.assertAttribute('data-palette', 'ivory').assertAttribute('data-ready'),
+    )
+  })
+
+  it('refuteAttribute fails on an attribute the scope has', async () => {
+    render(<Totals />)
+    const error = await createSession()
+      .within('.total', (t) => t.refuteAttribute('data-palette', { timeout: 100 }))
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).toContain("expected attribute 'data-palette' to be absent")
+  })
+
+  it.each([
+    ['reload', (s: Session) => s.reload()],
+    ['assertComputedStyle', (s: Session) => s.assertComputedStyle('color', 'red')],
+    ['assertNoHorizontalOverflow', (s: Session) => s.assertNoHorizontalOverflow()],
+    ['assertHorizontalOverflow', (s: Session) => s.assertHorizontalOverflow()],
+    ['assertHorizontallyContained', (s: Session) => s.assertHorizontallyContained('.total')],
+    ['scrollToHorizontalEnd', (s: Session) => s.scrollToHorizontalEnd()],
+  ])('%s() names itself as browser-only', async (verb, run) => {
+    render(<Totals />)
+    const error = await run(createSession()).then(
+      () => null,
+      (e: unknown) => e as StepError,
+    )
+    expect(error!.cause).toBeInstanceOf(BrowserOnlyVerbError)
+    expect(error!.message).toContain(`${verb}()`)
+  })
+
+  it('hides a value typed into a password field in the failure report', async () => {
+    render(
+      <div>
+        <label>Login code</label>
+        <input type="password" />
+      </div>,
+    )
+    const error = await createSession()
+      .fillIn('Login code', 'hunter2')
+      .assertText('never shown')
+      .then(
+        () => null,
+        (e: unknown) => e as StepError,
+      )
+    expect(error!.message).not.toContain('hunter2')
   })
 })
