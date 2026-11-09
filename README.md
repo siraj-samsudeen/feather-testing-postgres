@@ -129,7 +129,24 @@ available — `fillIn` (with `{ sensitive: true }`), `selectOption`,
 `upload`, `dropFile`, `assertText`, `refuteText`, `assertExactText`,
 `assertAttribute`/`refuteAttribute`, `assertValue`,
 `assertChecked`/`refuteChecked`, `assertSelected`, `assertOptions`,
-`within(selector, fn)`, `step(name, fn)`, `debug()`.
+`within(selector, fn, opts?)`, `step(name, fn)`, `debug()`.
+
+Every waiting verb takes `{ timeout }` in ms, which outlasts the session's
+(`createSession({ timeout })`, default 3000): `clickButton('Approve', { timeout: 10_000 })`.
+`0` means no limit.
+
+`within(selector, fn)` waits for `selector` to match, then needs **exactly
+one** match: none or several fail the step, naming the count, so narrow the
+selector. The scope is the selector, looked up again at every step inside, so
+a scope React remounts as a new element keeps working. On a shadow host
+(a custom element with an open shadow root), the scope is both its shadow
+tree and the light-DOM children it slots in:
+
+```ts
+await session.within('featherbase-bar', (bar) =>
+  bar.fillIn('Search', 'tickets').clickButton('Apply').assertText('Filter applied'),
+)
+```
 
 `assertExactText` and the attribute assertions check the current scope, so
 pair them with `within`; they take `{ timeout }`:
@@ -147,10 +164,9 @@ URL bar in jsdom. `reload`, `assertComputedStyle`,
 `assertHorizontallyContained` and `scrollToHorizontalEnd` throw core's
 `BrowserOnlyVerbError`: they need a browser, so put them in a Playwright spec.
 
-Secrets: a value typed into a password field, into a field whose label looks
-secret ("Password", "API key", "PIN", …), or passed with
-`{ sensitive: true }` shows as `'••••••'` in the chain and its failure
-report. `debug()` hides password inputs' values the same way.
+Secrets: the chain and its failure report never print a `fillIn` or
+`assertValue` value: it shows as `'••••••'` (`''` when empty), secret or not.
+`debug()` hides password inputs' values the same way.
 
 Four verbs are deliberately adapted to app markup rather than textbook markup:
 
@@ -159,7 +175,7 @@ Four verbs are deliberately adapted to app markup rather than textbook markup:
 | `fillIn` and every other label-addressed verb (`selectOption`, `check`/`uncheck`/`choose`, `upload`, `assertValue`, `assertChecked`, `assertSelected`, `assertOptions`) | Finds the control by, in order: a `<label>` that names it — through `htmlFor`, by nesting it (`<label>Store<select>…</select></label>`), or as a **sibling** inside a wrapper `<div>` with no `htmlFor`; its own `aria-label`; its `aria-labelledby`; then its placeholder. A label's name is its own text: the options of a nested select and the text of a button inside it (a help "?") are left out, and so is a trailing required marker (`Subject *`). `aria-label` and `aria-labelledby` count only on form controls. `fillIn` also accepts a number |
 | `choose` | By label, for the same reason: a radio with a sibling label has no accessible name |
 | `clickButton` / `clickLink` / `click` | Exact visible text first, then text that *contains* the name — an ordered fallback, so the lookup is never ambiguous. `clickButton` then tries a button's `aria-label` (a "Tick all" button labelled "Tick all in the list"), and refuses a disabled button rather than clicking into the void |
-| `assertText` / `refuteText` | Containment checks over the rendered text, so `assertText('TICK-')` can assert a generated id's prefix |
+| `assertText` / `refuteText` | Containment checks over the rendered text, so `assertText('TICK-')` can assert a generated id's prefix. Both wait within the step's budget: `refuteText` passes as soon as the text is gone, and fails after the budget saying it is `still present` |
 
 Failures print the whole chain:
 
@@ -170,7 +186,7 @@ Failed at: clickButton('Save')
 Cause: Button "Save" is disabled — a user could not click it
 
 Chain:
-    [ok] fillIn('Title', 'x')
+    [ok] fillIn('Title', '••••••')
     [ok] selectOption('Priority', 'High')
 >>> [FAILED] clickButton('Save')
     [skipped] assertText('TICK-')
