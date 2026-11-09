@@ -46,6 +46,18 @@ function clickableName(el: HTMLElement): string {
   return normalize(el.textContent)
 }
 
+/** Elements whose text is a value, not a name: a label leaves them out, so
+ * `<label>Store<select>…</select></label>` is named "Store", not "Store" plus
+ * every option. The same list Testing Library's label lookup uses. */
+const NAMED_ELEMENTS = new Set(['BUTTON', 'METER', 'OUTPUT', 'PROGRESS', 'SELECT', 'TEXTAREA', 'INPUT'])
+
+/** A label's own text, without the text of controls nested inside it. */
+function labelText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
+  if (node instanceof Element && NAMED_ELEMENTS.has(node.tagName)) return ''
+  return Array.from(node.childNodes, labelText).join('')
+}
+
 function isFormControl(el: Element): boolean {
   return (
     el instanceof HTMLInputElement ||
@@ -109,7 +121,7 @@ export class DomDriver extends RTLDriver {
       const root = this.rootElement()
       for (const l of Array.from(root.querySelectorAll('label'))) {
         // A trailing "*" is a required marker, not part of the field's name.
-        const text = normalize(l.textContent).replace(/\s*\*$/, '')
+        const text = normalize(labelText(l)).replace(/\s*\*$/, '')
         if (text !== label) continue
         if (l instanceof HTMLLabelElement && l.control) return l.control
         // control nested inside the label
